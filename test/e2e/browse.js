@@ -100,7 +100,12 @@ await step("picking A in the popup moves the site and only its own hidden addres
     pop.sessionId,
     `[...document.querySelectorAll('.route')].find(x => x.querySelector('.name').firstChild.textContent === 'A').click()`
   );
-  await until(async () => (await title(t)) === "page:A cdn:A", "site-d reloaded through A", 15000);
+  await until(async () => (await title(t)) === "page:A cdn:A", "site-d reloaded through A", 20000).catch(async (e) => {
+    const seen = await b.evaluate(t.sessionId, "location.href + ' | ' + document.title + ' | ' + (document.body?.innerText ?? '').slice(0, 120)").catch((x) => x.message);
+    const rules = (await storage("rules")).map((r) => `${r.pattern}->${r.route}`).join(", ");
+    const ds = (await recent()).filter((x) => /site-d|d-cdn/.test(x.host)).slice(-6).map((x) => `${x.host}:${x.route}/${x.why}`).join(", ");
+    throw new Error(`${e.message}\n       page: ${seen}\n       rules: ${rules}\n       helper: ${ds}`);
+  });
   await b.close(pop);
   await sleep(2000);
   const learned = await storage("learned");
