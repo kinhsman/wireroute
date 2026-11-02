@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 
-import { cleanPattern, hostOf, isLocal, matchRule, siteOf } from "../extension/lib/hosts.js";
+import { cleanPattern, hostOf, isLocal, isShared, matchRule, siteOf } from "../extension/lib/hosts.js";
 import { buildPac } from "../extension/lib/pac.js";
 import { flag, parseConf, toConf } from "../extension/lib/conf.js";
 
@@ -147,4 +147,11 @@ test("flag turns country codes into emoji", () => {
   assert.equal(flag("US"), "🇺🇸");
   assert.equal(flag("vn"), "🇻🇳");
   assert.equal(flag(undefined), "🌐");
+});
+
+test("shared services are recognised, site-specific addresses aren't", () => {
+  for (const h of ["www.google.com", "www.google.com.vn", "fonts.gstatic.com", "static.cloudflareinsights.com", "connect.facebook.net", "www.googletagmanager.com"]) {
+    assert.ok(isShared(h), h);
+  }
+  for (const h of ["video.viettel.vn", "tv360.vn", "cdn.tv360.vn", "media.ethicalads.io", "googleish.com"]) assert.ok(!isShared(h), h);
 });

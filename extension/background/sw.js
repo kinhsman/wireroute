@@ -9,7 +9,7 @@
 import * as native from "../lib/native.js";
 import * as store from "../lib/store.js";
 import { buildPac } from "../lib/pac.js";
-import { hostOf, matchRule, normHost, siteOf } from "../lib/hosts.js";
+import { hostOf, isShared, matchRule, normHost, siteOf } from "../lib/hosts.js";
 
 const HOLD_MS = 1000;
 const HINT_REFRESH_MS = 60_000;
@@ -299,6 +299,30 @@ function routeForHost(host, owner = host) {
   return { route: cfg.settings.defaultRoute, rule: null, why: "default" };
 }
 
+/**
+ * Where each host really goes right now, asked from the helper (the one that
+ * decides). Falls back to our own reading of the rules when it isn't running.
+ * Returns Map host -> {route, why, rule} with why: rule | detected | default | off.
+ */
+async function explain(hosts, owner) {
+  const out = new Map();
+  if (native.isConnected() && cfg.settings.enabled && hosts.length) {
+    try {
+      const res = await native.request({ cmd: "explain", hosts }, 3000);
+      for (const e of res.routes ?? []) {
+        const rule = e.rule ? cfg.rules.find((r) => r.id === e.rule) ?? null : null;
+        const why = e.why === "rule" ? "rule" : rule ? "detected" : "default";
+        out.set(e.host, { route: e.route, why, rule });
+      }
+      return out;
+    } catch {
+      /* fall through */
+    }
+  }
+  for (const h of hosts) out.set(h, routeForHost(h, owner));
+  return out;
+}
+
 function shortLabel(server) {
   if (server.label) return server.label.slice(0, 4);
   return server.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "VPN";
@@ -311,7 +335,7 @@ async function updateBadge(tabId) {
   if (!cfg.settings.enabled) {
     text = "off";
   } else if (host) {
-    const { route } = routeForHost(host);
+    const { route } = (await explain([host])).get(host);
     if (route !== "direct") {
       const s = serverById(route);
       if (s && routeUsable(route)) {
@@ -386,25 +410,6 @@ function scheduleLearnedSave() {
     learnedDirty = false;
     await store.save({ learned: cfg.learned });
   }, 1500);
-}
-
-// Addresses lots of sites share: search, analytics, ads, big CDNs. They still
-// follow a site live while it uses them, but are never saved as that site's,
-// or (say) Google would go through tv360.vn's server from every tab.
-const SHARED_SITES = new Set(
-  (
-    "google.com gstatic.com googleapis.com googleusercontent.com googletagmanager.com google-analytics.com " +
-    "googlesyndication.com googleadservices.com doubleclick.net recaptcha.net gvt1.com gvt2.com " +
-    "facebook.com facebook.net fbcdn.net instagram.com twitter.com x.com twimg.com tiktok.com " +
-    "cloudflare.com cloudflareinsights.com jsdelivr.net unpkg.com jquery.com bootstrapcdn.com fontawesome.com " +
-    "apple.com icloud.com microsoft.com bing.com clarity.ms hotjar.com sentry.io segment.io amplitude.com " +
-    "mixpanel.com newrelic.com nr-data.net dmca.com"
-  ).split(" ")
-);
-
-function isShared(host) {
-  const site = siteOf(host);
-  return SHARED_SITES.has(site) || /^google\.[a-z.]+$/.test(site);
 }
 
 function learn(host, ruleId) {
@@ -517,6 +522,13 @@ async function handle(msg) {
         tunnels,
       };
 
+    case "recent": {
+      // The helper's real routing decisions, newest last.
+      if (!native.isConnected()) return [];
+      const res = await native.request({ cmd: "recent" });
+      return res.recent ?? [];
+    }
+
     case "reconnect":
       reconnectDelay = 2000;
       await connectHelper();
@@ -527,11 +539,13 @@ async function handle(msg) {
       if (!host) return { host: "" };
       const site = siteOf(host);
       const rule = matchRule(cfg.rules, host);
-      const r = routeForHost(host);
-      const hosts = [...(tabHosts.get(msg.tabId)?.hosts ?? [])]
-        .filter((h) => h !== host)
-        .map((h) => ({ host: h, ...pick(routeForHost(h, host)) }))
-        .sort((a, b) => a.host.localeCompare(b.host));
+      const others = [...(tabHosts.get(msg.tabId)?.hosts ?? [])].filter((h) => h !== host).sort();
+      const truth = await explain([host, ...others], host);
+      const r = truth.get(host);
+      const hosts = others.map((h) => {
+        const t = truth.get(h);
+        return { host: h, route: t.route, why: t.why, follows: t.why === "detected" ? t.rule.pattern : "", usable: routeUsable(t.route) };
+      });
       return { host, site, rule, route: r.route, why: r.why, follows: r.why === "detected" ? r.rule.pattern : "", usable: routeUsable(r.route), hosts };
     }
 
@@ -611,6 +625,3 @@ async function handle(msg) {
   }
 }
 
-function pick({ route, why }) {
-  return { route, why, usable: routeUsable(route) };
-}

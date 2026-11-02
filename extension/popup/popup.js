@@ -167,7 +167,11 @@ function renderSite() {
         "li",
         {},
         el("span", { class: "h", title: h.host }, h.host),
-        el("span", { class: "r" }, routeName(h.route) + (h.why === "rule" ? " (own rule)" : ""))
+        el(
+          "span",
+          { class: "r", title: h.follows ? `Goes with ${h.follows}` : "" },
+          routeName(h.route) + (h.why === "rule" ? " (own pick)" : h.follows && h.follows !== info.site ? ` (with ${h.follows})` : "")
+        )
       )
     )
   );
@@ -202,8 +206,15 @@ async function refresh() {
 }
 
 $("enabled").addEventListener("change", async (e) => {
-  const { settings } = await store.load(["settings"]);
-  await store.save({ settings: { ...settings, enabled: e.target.checked } });
+  // Read the switch now: a refresh during the save would reset it.
+  const on = e.target.checked;
+  busy = true;
+  try {
+    const { settings } = await store.load(["settings"]);
+    await store.save({ settings: { ...settings, enabled: on } });
+  } finally {
+    busy = false;
+  }
   setTimeout(refresh, 400);
 });
 $("open-options").addEventListener("click", () => chrome.runtime.openOptionsPage());

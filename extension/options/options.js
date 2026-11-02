@@ -226,54 +226,75 @@ function renderSettings() {
   }
 }
 
+// --- changes ---
+// Every change reads what's saved right now (never the copy on screen, which
+// can be a moment old) and changes run one at a time, so quick clicks can't
+// undo or duplicate each other.
+
+let queue = Promise.resolve();
+function change(fn) {
+  const run = queue.then(fn);
+  queue = run.catch(() => {});
+  return run;
+}
+const fresh = (keys) => store.load(keys);
+
 // --- sites ---
 
-async function updateRule(id, patch) {
-  const rules = d.rules.map((r) => (r.id === id ? { ...r, ...patch } : r));
+const updateRule = (id, patch) => change(async () => {
+  const { rules: saved } = await fresh(["rules"]);
+  const rules = saved.map((r) => (r.id === id ? { ...r, ...patch } : r));
   await store.save({ rules });
-  await refresh();
-}
-
-async function removeRule(r) {
-  const rules = d.rules.filter((x) => x.id !== r.id);
-  const learned = Object.fromEntries(Object.entries(d.learned).filter(([, id]) => id !== r.id));
-  await store.save({ rules, learned });
-  await refresh();
-}
-
-$("add-site").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const pattern = cleanPattern($("site-input").value);
-  if (!pattern) return showNotice("site-error", "That doesn't look like a website. Try something like cnn.com.");
-  if (d.rules.some((r) => normHost(r.pattern) === pattern && !r.exact)) {
-    return showNotice("site-error", `${pattern} is already in the list.`);
-  }
-  showNotice("site-error", "");
-  const rules = [...d.rules, { id: store.newId(), pattern, exact: false, route: $("site-route").value, autoFollow: true }];
-  await store.save({ rules });
-  $("site-input").value = "";
   await refresh();
 });
 
-$("default-route").addEventListener("change", async (e) => {
-  await store.save({ settings: { ...d.settings, defaultRoute: e.target.value } });
+const removeRule = (r) => change(async () => {
+  const saved = await fresh(["rules", "learned"]);
+  const rules = saved.rules.filter((x) => x.id !== r.id);
+  const learned = Object.fromEntries(Object.entries(saved.learned).filter(([, id]) => id !== r.id));
+  await store.save({ rules, learned });
   await refresh();
+});
+
+$("add-site").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = $("site-input").value;
+  const route = $("site-route").value;
+  change(async () => {
+    const pattern = cleanPattern(input);
+    if (!pattern) return showNotice("site-error", "That doesn't look like a website. Try something like cnn.com.");
+    const { rules: saved } = await fresh(["rules"]);
+    if (saved.some((r) => normHost(r.pattern) === pattern && !r.exact)) {
+      return showNotice("site-error", `${pattern} is already in the list.`);
+    }
+    showNotice("site-error", "");
+    await store.save({ rules: [...saved, { id: store.newId(), pattern, exact: false, route, autoFollow: true }] });
+    if ($("site-input").value === input) $("site-input").value = "";
+    await refresh();
+  });
+});
+
+$("default-route").addEventListener("change", (e) => {
+  const value = e.target.value;
+  change(async () => {
+    const { settings } = await fresh(["settings"]);
+    await store.save({ settings: { ...settings, defaultRoute: value } });
+    await refresh();
+  });
 });
 
 // --- servers ---
 
-function isDuplicate(s) {
-  return d.servers.some((x) => x.privateKey === s.privateKey && x.publicKey === s.publicKey && x.endpoint === s.endpoint);
-}
+const sameServer = (a, b) => a.privateKey === b.privateKey && a.publicKey === b.publicKey && a.endpoint === b.endpoint;
 
-async function addServers(entries) {
-  const servers = [...d.servers];
+const addServers = (entries) => change(async () => {
+  const servers = [...(await fresh(["servers"])).servers];
   const added = [];
   const errors = [];
   for (const { name, text } of entries) {
     try {
       const s = parseConf(text);
-      if (isDuplicate(s) || servers.some((x) => x.privateKey === s.privateKey && x.publicKey === s.publicKey && x.endpoint === s.endpoint)) {
+      if (servers.some((x) => sameServer(x, s))) {
         errors.push(`${name}: already added.`);
         continue;
       }
@@ -287,7 +308,7 @@ async function addServers(entries) {
   showNotice("server-error", errors.join(" "));
   showNotice("server-ok", added.length ? `Added ${added.join(", ")}. Pick it for a site from the WireRoute icon.` : "");
   await refresh();
-}
+});
 
 async function readFiles(files) {
   const entries = [];
@@ -333,11 +354,15 @@ async function renameServer(s) {
   const name = prompt("Name for this server", s.name);
   if (name === null || !name.trim()) return;
   const label = prompt("Short badge text (up to 4 letters, like US or VN). Leave empty to use its country.", s.label ?? "");
-  const servers = d.servers.map((x) =>
-    x.id === s.id ? { ...x, name: name.trim(), label: (label ?? x.label ?? "").trim().slice(0, 4).toUpperCase() } : x
-  );
-  await store.save({ servers });
-  await refresh();
+  await change(async () => {
+    const { servers } = await fresh(["servers"]);
+    await store.save({
+      servers: servers.map((x) =>
+        x.id === s.id ? { ...x, name: name.trim(), label: (label ?? x.label ?? "").trim().slice(0, 4).toUpperCase() } : x
+      ),
+    });
+    await refresh();
+  });
 }
 
 async function removeServer(s, uses) {
@@ -345,16 +370,23 @@ async function removeServer(s, uses) {
     ? `Delete ${s.name}? ${uses} site setting${uses === 1 ? " uses" : "s use"} it. Those sites will be blocked until you pick another server.`
     : `Delete ${s.name}?`;
   if (!confirm(msg)) return;
-  await store.save({ servers: d.servers.filter((x) => x.id !== s.id) });
-  await refresh();
+  await change(async () => {
+    const { servers } = await fresh(["servers"]);
+    await store.save({ servers: servers.filter((x) => x.id !== s.id) });
+    await refresh();
+  });
 }
 
 // --- settings ---
 
 for (const input of document.querySelectorAll("[data-setting]")) {
-  input.addEventListener("change", async () => {
-    await store.save({ settings: { ...d.settings, [input.dataset.setting]: input.checked } });
-    await refresh();
+  input.addEventListener("change", () => {
+    const value = input.checked;
+    change(async () => {
+      const { settings } = await fresh(["settings"]);
+      await store.save({ settings: { ...settings, [input.dataset.setting]: value } });
+      await refresh();
+    });
   });
 }
 
@@ -380,11 +412,14 @@ $("import-file").addEventListener("change", async (e) => {
     const b = JSON.parse(await f.text());
     if (b.wireroute !== 1) throw new Error("not a WireRoute backup");
     const full = (b.servers ?? []).filter((s) => s.privateKey && s.publicKey);
-    const servers = [...d.servers];
-    for (const s of full) if (!servers.some((x) => x.id === s.id)) servers.push(s);
     if (!confirm(`Replace your sites and settings with the backup? ${full.length} server(s) with keys will be added.`)) return;
-    await store.save({ servers, rules: b.rules ?? [], learned: b.learned ?? {}, settings: { ...d.settings, ...(b.settings ?? {}) } });
-    await refresh();
+    await change(async () => {
+      const saved = await fresh(["servers", "settings"]);
+      const servers = [...saved.servers];
+      for (const s of full) if (!servers.some((x) => x.id === s.id)) servers.push(s);
+      await store.save({ servers, rules: b.rules ?? [], learned: b.learned ?? {}, settings: { ...saved.settings, ...(b.settings ?? {}) } });
+      await refresh();
+    });
   } catch (err) {
     alert("Couldn't import: " + err.message);
   }

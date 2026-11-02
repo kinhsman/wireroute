@@ -5,139 +5,19 @@
 //
 // Nothing here touches your normal Chrome profile or the Mac's network.
 
-import { spawn, execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import assert from "node:assert/strict";
-import { parseConf } from "../../extension/lib/conf.js";
+import { Browser, EXT_ID, ROOT, finish, setup, sleep, step, until } from "./harness.js";
 
-const ROOT = resolve(import.meta.dirname, "../..");
-const EXT_ID = "kbmajebcnniiphhhhhgafeipmpibcnjc";
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const tmp = mkdtempSync(join(tmpdir(), "wireroute-e2e-"));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const procs = [];
-let failures = 0;
-
-function cleanup() {
-  for (const p of procs) {
-    try {
-      p.kill("SIGKILL");
-    } catch {}
-  }
-  if (!process.env.KEEP) rmSync(tmp, { recursive: true, force: true });
-}
-process.on("exit", cleanup);
-
-async function step(name, fn) {
-  const t0 = Date.now();
-  try {
-    await fn();
-    console.log(`  ok   ${name} (${Date.now() - t0}ms)`);
-  } catch (e) {
-    failures++;
-    console.log(`  FAIL ${name}\n       ${e.message.split("\n").join("\n       ")}`);
-  }
-}
-
-async function until(fn, what, timeout = 15000) {
-  const end = Date.now() + timeout;
-  let last;
-  while (Date.now() < end) {
-    try {
-      last = await fn();
-      if (last) return last;
-    } catch (e) {
-      last = e.message;
-    }
-    await sleep(200);
-  }
-  throw new Error(`timed out waiting for ${what} (last: ${JSON.stringify(last)})`);
-}
-
-// --- build ---
-// Chrome on macOS only finds helpers registered in its standard folder, so the
-// test installs the current helper the normal way first.
-console.log("installing helper and building fake servers");
-execFileSync(join(ROOT, "install", "install.sh"), { stdio: "ignore" });
-execFileSync("go", ["build", "-o", join(tmp, "fakevpn"), "./cmd/fakevpn"], { cwd: join(ROOT, "host"), stdio: "inherit" });
-
-// --- fake servers ---
-const fake = spawn(join(tmp, "fakevpn"), ["-dir", tmp, "A", "B"], { stdio: ["ignore", "pipe", "inherit"] });
-procs.push(fake);
-await new Promise((res) => fake.stdout.on("data", (b) => String(b).includes("ready") && res()));
-const confA = parseConf(readFileSync(join(tmp, "A.conf"), "utf8"));
-const confB = parseConf(readFileSync(join(tmp, "B.conf"), "utf8"));
-
-const profile = join(tmp, "profile");
-// A Chrome with its own profile folder reads helper registrations from there.
-mkdirSync(join(profile, "NativeMessagingHosts"), { recursive: true });
-copyFileSync(
-  join(homedir(), "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.wireroute.host.json"),
-  join(profile, "NativeMessagingHosts", "com.wireroute.host.json")
-);
-
-const chrome = spawn(
-  CHROME,
-  [
-    ...(process.env.HEADFUL ? ["--window-position=3000,3000", "--window-size=800,600"] : ["--headless=new"]),
-    `--user-data-dir=${profile}`,
-    "--remote-debugging-pipe",
-    "--enable-unsafe-extension-debugging",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-features=HttpsUpgrades",
-    "about:blank",
-  ],
-  { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] }
-);
-procs.push(chrome);
-
-// --- tiny CDP client over the pipe ---
-let nextId = 1;
-const waiting = new Map();
-const eventWaiters = [];
-let buf = "";
-chrome.stdio[4].on("data", (chunk) => {
-  buf += chunk.toString();
-  let i;
-  while ((i = buf.indexOf("\0")) >= 0) {
-    const msg = JSON.parse(buf.slice(0, i));
-    buf = buf.slice(i + 1);
-    if (msg.id && waiting.has(msg.id)) {
-      const { res, rej } = waiting.get(msg.id);
-      waiting.delete(msg.id);
-      msg.error ? rej(new Error(msg.error.message)) : res(msg.result);
-    } else if (msg.method) {
-      for (const w of [...eventWaiters]) if (w.match(msg)) w.res(msg);
-    }
-  }
-});
-function cdp(method, params = {}, sessionId) {
-  const id = nextId++;
-  chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
-  return new Promise((res, rej) => waiting.set(id, { res, rej }));
-}
-
-async function evaluate(sessionId, expression) {
-  const r = await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
-  return r.result.value;
-}
-
-async function openPage(url) {
-  const { targetId } = await cdp("Target.createTarget", { url });
-  const { sessionId } = await cdp("Target.attachToTarget", { targetId, flatten: true });
-  await cdp("Runtime.enable", {}, sessionId);
-  return { targetId, sessionId };
-}
-
-const ask = (s, cmd, payload = {}) =>
-  evaluate(
-    s,
-    `new Promise((res, rej) => chrome.runtime.sendMessage(${JSON.stringify({ cmd, ...payload })}, (r) => r?.ok ? res(r.data) : rej(new Error(r?.error))))`
-  );
+const { tmp, confs } = await setup(["A", "B"]);
+const confA = confs.A;
+const confB = confs.B;
+const browser = new Browser(join(tmp, "profile"));
+await browser.launch();
+const cdp = (...a) => browser.cdp(...a);
+const evaluate = (...a) => browser.evaluate(...a);
+const openPage = (...a) => browser.openPage(...a);
+const ask = (...a) => browser.ask(...a);
 
 console.log("running in a throwaway Chrome");
 
@@ -355,5 +235,4 @@ await step("turning WireRoute off hands the proxy back to Chrome", async () => {
   assert.equal(rtc, "default");
 });
 
-console.log(failures ? `\n${failures} failed` : "\nall passed");
-process.exit(failures ? 1 : 0);
+finish();

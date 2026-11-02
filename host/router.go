@@ -102,15 +102,18 @@ func (r *Router) Hint(host, ruleID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
-	if old, ok := r.hints[host]; ok && ruleID == "" && old.rule != "" && now.Sub(old.at) < hintTTL {
-		// A ruled site claimed this host recently; an unruled tab touching the
-		// same shared address (fonts, analytics) must not pull it away.
+	if old, ok := r.hints[host]; ok && old.rule != "" && old.rule != ruleID && now.Sub(old.at) < hintTTL {
+		// A ruled site claimed this host recently. Another tab touching the
+		// same address must not pull it away: switching would cut the first
+		// site's live connections (a playing video would stall).
 		r.wakeLocked(host)
 		return
 	}
 	r.hints[host] = hint{rule: ruleID, at: now}
 	if ruleID != "" {
-		r.learned[host] = ruleID
+		if _, claimed := r.learned[host]; !claimed {
+			r.learned[host] = ruleID
+		}
 	}
 	r.wakeLocked(host)
 	if len(r.hints) > 20000 {
@@ -136,10 +139,17 @@ func (r *Router) pruneLocked(now time.Time) {
 // Decide returns the route for a new connection to host, waiting up to the
 // hold time for a hint when nothing is known yet.
 func (r *Router) Decide(ctx context.Context, host string) string {
+	route, _ := r.DecideWhy(ctx, host)
+	return route
+}
+
+// DecideWhy is Decide plus the reason: local, rule, hint, learned,
+// unclaimed or waited (nobody claimed it within the hold time).
+func (r *Router) DecideWhy(ctx context.Context, host string) (route, why string) {
 	host = normHost(host)
-	route, known, wait := r.lookup(host, true)
+	route, why, known, wait := r.lookup(host, true)
 	if known || wait == nil {
-		return route
+		return route, why
 	}
 	timer := time.NewTimer(r.hold)
 	defer timer.Stop()
@@ -148,8 +158,9 @@ func (r *Router) Decide(ctx context.Context, host string) string {
 	case <-timer.C:
 	case <-ctx.Done():
 	}
-	route, known, _ = r.lookup(host, false)
+	route, why, known, _ = r.lookup(host, false)
 	if !known {
+		why = "waited"
 		// Remember that nobody claimed it so the next connection doesn't wait.
 		r.mu.Lock()
 		r.unclaimed[host] = r.now()
@@ -158,45 +169,63 @@ func (r *Router) Decide(ctx context.Context, host string) string {
 		}
 		r.mu.Unlock()
 	}
-	return route
+	return route, why
+}
+
+// Explain says how a new connection to host would go right now, without
+// waiting: the route, why, and which site rule decided it (if any).
+func (r *Router) Explain(host string) (route, why, ruleID string) {
+	host = normHost(host)
+	route, why, _, _ = r.lookup(host, false)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch why {
+	case "rule":
+		ruleID = r.matchRuleLocked(host).ID
+	case "hint":
+		ruleID = r.hints[host].rule
+	case "learned":
+		ruleID = r.learned[host]
+	}
+	return route, why, ruleID
 }
 
 // Peek is Decide without waiting; used to re-check live connections.
 func (r *Router) Peek(host string) string {
-	route, _, _ := r.lookup(normHost(host), false)
+	route, _, _, _ := r.lookup(normHost(host), false)
 	return route
 }
 
-func (r *Router) lookup(host string, register bool) (route string, known bool, wait chan struct{}) {
+func (r *Router) lookup(host string, register bool) (route, why string, known bool, wait chan struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if host == "" {
-		return r.def, true, nil
+		return r.def, "default", true, nil
 	}
 	if r.lanDirect && isLocal(host) {
-		return RouteDirect, true, nil
+		return RouteDirect, "local", true, nil
 	}
 	if rule := r.matchRuleLocked(host); rule != nil {
-		return rule.Route, true, nil
+		return rule.Route, "rule", true, nil
 	}
 	if hi, ok := r.hints[host]; ok && r.now().Sub(hi.at) < hintTTL {
-		return r.ruleRouteLocked(hi.rule), true, nil
+		return r.ruleRouteLocked(hi.rule), "hint", true, nil
 	}
 	if id, ok := r.learned[host]; ok {
 		if _, exists := r.byID[id]; exists {
-			return r.ruleRouteLocked(id), true, nil
+			return r.ruleRouteLocked(id), "learned", true, nil
 		}
 	}
 	if at, ok := r.unclaimed[host]; ok && r.now().Sub(at) < unclaimedTTL {
-		return r.def, true, nil
+		return r.def, "unclaimed", true, nil
 	}
 	if !register {
-		return r.def, false, nil
+		return r.def, "default", false, nil
 	}
 	ch := make(chan struct{})
 	r.waiters[host] = append(r.waiters[host], ch)
-	return r.def, false, ch
+	return r.def, "default", false, ch
 }
 
 func (r *Router) ruleRouteLocked(id string) string {

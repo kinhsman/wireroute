@@ -32,6 +32,34 @@ type Proxy struct {
 
 	ln   net.Listener
 	port int
+
+	recent []Decision // last decisions, newest last; for the UI and tests
+}
+
+// Decision is one routing choice the proxy made.
+type Decision struct {
+	Host  string `json:"host"`
+	Route string `json:"route"` // direct, a server ID, or "blocked"
+	Why   string `json:"why"`
+	At    int64  `json:"at"` // unix milliseconds
+}
+
+const maxRecent = 500
+
+func (p *Proxy) record(host, route, why string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recent = append(p.recent, Decision{Host: normHost(host), Route: route, Why: why, At: time.Now().UnixMilli()})
+	if len(p.recent) > maxRecent {
+		p.recent = p.recent[len(p.recent)-maxRecent:]
+	}
+}
+
+// Recent returns a copy of the latest decisions.
+func (p *Proxy) Recent() []Decision {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Decision(nil), p.recent...)
 }
 
 type tracked struct {
@@ -150,8 +178,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad CONNECT target", http.StatusBadRequest)
 		return
 	}
-	route := p.router.Decide(r.Context(), host)
+	route, why := p.router.DecideWhy(r.Context(), host)
 	remote, err := p.dial(r.Context(), route, r.Host)
+	if errors.Is(err, errBlocked) {
+		p.record(host, "blocked", why)
+	} else {
+		p.record(host, route, why)
+	}
 	if err != nil {
 		code := http.StatusBadGateway
 		if errors.Is(err, errBlocked) {
@@ -211,7 +244,8 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this is a proxy", http.StatusBadRequest)
 		return
 	}
-	route := p.router.Decide(r.Context(), r.URL.Hostname())
+	route, why := p.router.DecideWhy(r.Context(), r.URL.Hostname())
+	p.record(r.URL.Hostname(), route, why)
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL

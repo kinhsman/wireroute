@@ -124,3 +124,22 @@ export function cleanPattern(input) {
   if (s.startsWith(".") || s.includes("..")) return "";
   return s;
 }
+
+// Addresses lots of sites share: search, analytics, ads, big CDNs. They never
+// follow a site (live or saved), or Google would go through tv360.vn's server
+// from every tab. They use their own rule, or the default.
+const SHARED_SITES = new Set(
+  (
+    "google.com gstatic.com googleapis.com googleusercontent.com googletagmanager.com google-analytics.com " +
+    "googlesyndication.com googleadservices.com doubleclick.net recaptcha.net gvt1.com gvt2.com " +
+    "facebook.com facebook.net fbcdn.net instagram.com twitter.com x.com twimg.com tiktok.com " +
+    "cloudflare.com cloudflareinsights.com jsdelivr.net unpkg.com jquery.com bootstrapcdn.com fontawesome.com " +
+    "apple.com icloud.com microsoft.com bing.com clarity.ms hotjar.com sentry.io segment.io amplitude.com " +
+    "mixpanel.com newrelic.com nr-data.net dmca.com"
+  ).split(" ")
+);
+
+export function isShared(host) {
+  const site = siteOf(host);
+  return SHARED_SITES.has(site) || /^google\.[a-z.]+$/.test(site);
+}

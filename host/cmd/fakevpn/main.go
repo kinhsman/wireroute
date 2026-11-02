@@ -130,20 +130,45 @@ func handler(name string) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Cache-Control", "no-store")
+		q := r.URL.Query()
 		switch {
 		case r.URL.Path == "/whoami":
 			fmt.Fprint(w, name)
+		case strings.HasPrefix(host, "search"):
+			// A search results page: preconnects and loads its own assets, and
+			// links to a result.
+			to := q.Get("to")
+			if to == "" {
+				to = "http://site-a.test/"
+			}
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<!doctype html><title>search %s</title>
+<link rel="preconnect" href="http://search-assets.test">
+<img src="http://search-assets.test/logo.png" alt="">
+<a id="result" href="%s">result</a>`, name, to)
+		case strings.HasPrefix(host, "widget"):
+			// An embedded player from another company, with its own CDN.
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<!doctype html><title>widget</title><script>
+fetch("http://widget-cdn.test/whoami").then(r => r.text()).then(t => parent.postMessage("widget-cdn:" + t, "*"));
+</script>`)
 		case strings.HasPrefix(host, "site"):
 			cdn := r.URL.Query().Get("cdn")
 			if cdn == "" {
 				cdn = "hidden-cdn.test"
 			}
+			frame := ""
+			if f := q.Get("frame"); f != "" {
+				frame = fmt.Sprintf(`<iframe src="http://%s/frame"></iframe>`, f)
+			}
 			w.Header().Set("Content-Type", "text/html")
-			fmt.Fprintf(w, `<!doctype html><title>loading</title><h1>page from %s</h1>
+			fmt.Fprintf(w, `<!doctype html><title>loading</title><h1>page from %s</h1>%s
 <script>
+addEventListener("message", (e) => { document.body.dataset.widget = e.data; });
 fetch("http://%s/whoami").then(r => r.text()).then(t => { document.title = "page:%s cdn:" + t; })
   .catch(e => { document.title = "page:%s cdn:error"; });
-</script>`, name, cdn, name, name)
+window.later = (h) => fetch("http://" + h + "/whoami").then(r => r.text());
+</script>`, name, frame, cdn, name, name)
 		default:
 			fmt.Fprintf(w, "via %s for %s", name, host)
 		}

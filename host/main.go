@@ -251,6 +251,17 @@ func (m *manager) handle(msg *Incoming) {
 		m.router.Hint(msg.Host, msg.Rule)
 		m.proxy.Recheck()
 
+	case "explain":
+		out := make([]Explained, 0, len(msg.Hosts))
+		for _, h := range msg.Hosts {
+			route, why, rule := m.router.Explain(h)
+			out = append(out, Explained{Host: h, Route: route, Why: why, Rule: rule})
+		}
+		reply(Outgoing{Type: "explain", Routes: out})
+
+	case "recent":
+		reply(Outgoing{Type: "recent", Recent: m.proxy.Recent()})
+
 	case "status":
 		reply(Outgoing{Type: "status", Port: m.proxy.Port(), Tunnels: m.statuses()})
 

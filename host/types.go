@@ -46,13 +46,22 @@ type Config struct {
 
 // Incoming is any message from the extension.
 type Incoming struct {
-	ID     int     `json:"id,omitempty"`
-	Cmd    string  `json:"cmd"`
-	Port   int     `json:"port,omitempty"`
-	Config *Config `json:"config,omitempty"`
-	Host   string  `json:"host,omitempty"`
-	Rule   string  `json:"rule,omitempty"`
-	Server string  `json:"server,omitempty"`
+	ID     int      `json:"id,omitempty"`
+	Cmd    string   `json:"cmd"`
+	Port   int      `json:"port,omitempty"`
+	Config *Config  `json:"config,omitempty"`
+	Host   string   `json:"host,omitempty"`
+	Rule   string   `json:"rule,omitempty"`
+	Server string   `json:"server,omitempty"`
+	Hosts  []string `json:"hosts,omitempty"`
+}
+
+// Explained is how one host is routed right now, for the popup.
+type Explained struct {
+	Host  string `json:"host"`
+	Route string `json:"route"`
+	Why   string `json:"why"`
+	Rule  string `json:"rule,omitempty"`
 }
 
 // TunnelStatus is what the UI shows for one server.
@@ -79,5 +88,7 @@ type Outgoing struct {
 	Loc     string         `json:"loc,omitempty"`
 	// DirectIP is your own address, so the UI can warn when a server comes
 	// out onto the internet as you.
-	DirectIP string `json:"directIP,omitempty"`
+	DirectIP string      `json:"directIP,omitempty"`
+	Recent   []Decision  `json:"recent,omitempty"`
+	Routes   []Explained `json:"routes,omitempty"`
 }

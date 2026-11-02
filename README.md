@@ -49,7 +49,8 @@ Uninstall the helper with `./install/install.sh --remove`.
 ```bash
 npm test                          # rules, PAC and config parsing
 (cd host && go test -race ./...)  # helper, with fake WireGuard servers
-npm run e2e                       # real Chrome + helper + 2 fake servers
+npm run e2e                       # real Chrome: features, real-life browsing,
+                                  # break-it (leaks, crashes, restart), every button
 ```
 
 The end-to-end test runs a throwaway headless Chrome profile; it never touches

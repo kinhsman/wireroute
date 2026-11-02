@@ -63,6 +63,27 @@ func TestHintFollowsSite(t *testing.T) {
 	}
 }
 
+func TestFirstClaimWins(t *testing.T) {
+	r := testRouter(&Config{
+		DefaultRoute: "direct",
+		Rules: []Rule{
+			{ID: "a", Pattern: "site-a.example", Route: "us"},
+			{ID: "b", Pattern: "site-b.example", Route: "vn"},
+		},
+	})
+	r.Hint("shared-cdn.example", "a")
+	r.Hint("shared-cdn.example", "b")
+	if route, why, rule := r.Explain("shared-cdn.example"); route != "us" || why != "hint" || rule != "a" {
+		t.Fatalf("got %s/%s/%s, want us/hint/a", route, why, rule)
+	}
+	// Once the first claim goes stale, the other site may take it.
+	r.now = func() time.Time { return time.Now().Add(hintTTL + time.Second) }
+	r.Hint("shared-cdn.example", "b")
+	if route, _, rule := r.Explain("shared-cdn.example"); route != "vn" || rule != "b" {
+		t.Fatalf("after expiry got %s/%s, want vn/b", route, rule)
+	}
+}
+
 func TestLearnedSurvivesConfig(t *testing.T) {
 	r := testRouter(&Config{
 		DefaultRoute: "direct",
