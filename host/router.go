@@ -80,7 +80,14 @@ func (r *Router) SetConfig(c *Config) {
 	}
 	r.learned = map[string]string{}
 	for h, id := range c.Learned {
-		r.learned[normHost(h)] = id
+		h = normHost(h)
+		r.learned[h] = id
+		// A hint from before this change (say, from when the site had no rule)
+		// must not keep the host on its old route; the next request from the
+		// site sends a fresh one.
+		if hi, ok := r.hints[h]; ok && hi.rule != id {
+			delete(r.hints, h)
+		}
 	}
 	r.def = c.DefaultRoute
 	if r.def == "" {

@@ -84,6 +84,25 @@ func TestFirstClaimWins(t *testing.T) {
 	}
 }
 
+// Picking a server for a site that was just loaded: its hidden addresses
+// were hinted "no rule" a moment ago, then the extension tags them to the new
+// rule. They must switch at once, not after the old hint expires.
+func TestNewRuleBeatsOldHint(t *testing.T) {
+	r := testRouter(&Config{DefaultRoute: "b"})
+	r.Hint("cdn.site-d.example", "")
+	if got := r.Peek("cdn.site-d.example"); got != "b" {
+		t.Fatalf("before: got %s, want b", got)
+	}
+	r.SetConfig(&Config{
+		DefaultRoute: "b",
+		Rules:        []Rule{{ID: "d", Pattern: "site-d.example", Route: "a"}},
+		Learned:      map[string]string{"cdn.site-d.example": "d"},
+	})
+	if got := r.Peek("cdn.site-d.example"); got != "a" {
+		t.Fatalf("after picking a server: got %s, want a", got)
+	}
+}
+
 func TestLearnedSurvivesConfig(t *testing.T) {
 	r := testRouter(&Config{
 		DefaultRoute: "direct",
