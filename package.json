@@ -1,0 +1,9 @@
+{
+  "name": "wireroute",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "e2e": "node test/e2e/run.js"
+  }
+}

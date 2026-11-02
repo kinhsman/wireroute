@@ -1,117 +1,121 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title data-i18n="options_title">WireGuardExt — Settings</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WireRoute</title>
+  <link rel="stylesheet" href="../lib/ui.css" />
   <link rel="stylesheet" href="options.css" />
 </head>
 <body>
-  <header class="topbar">
-    <h1 data-i18n="popup_title">WireGuardExt</h1>
-    <p class="subtitle" data-i18n="options_subtitle">Manage your WireGuard VPN profiles</p>
-  </header>
+  <aside class="nav">
+    <div class="brand"><img src="../icons/icon-48.png" alt="" /> WireRoute</div>
+    <a href="#sites" data-tab="sites">Sites</a>
+    <a href="#servers" data-tab="servers">Servers</a>
+    <a href="#settings" data-tab="settings">Settings</a>
+    <div class="helper-state" id="helper-state"></div>
+  </aside>
 
   <main>
-    <!-- Lista de perfiles existentes -->
-    <section class="profiles-section">
-      <div class="section-head">
-        <h2 data-i18n="profiles">Profiles</h2>
-        <div class="section-actions">
-          <button id="btn-import" class="btn btn-ghost" data-i18n="import_conf" data-i18n-title="import_conf_title">Import .conf</button>
-          <input type="file" id="import-file" accept=".conf" multiple hidden />
-          <button id="btn-new" class="btn btn-primary" data-i18n="new_profile">+ New profile</button>
+    <!-- Sites -->
+    <section id="tab-sites" class="tab">
+      <header class="head">
+        <div>
+          <h1>Sites</h1>
+          <p class="dim">Each site goes through the server you pick. Hidden addresses it uses are detected and follow it automatically.</p>
         </div>
+      </header>
+
+      <form id="add-site" class="card add-row">
+        <input type="text" id="site-input" placeholder="Add a site, like cnn.com" autocomplete="off" />
+        <select id="site-route"></select>
+        <button class="btn btn-primary" type="submit">Add</button>
+      </form>
+      <div id="site-error" class="notice bad hidden"></div>
+
+      <div id="sites-empty" class="card empty hidden">
+        <p class="dim">No sites yet. Easiest way: open the site, click the WireRoute icon, pick a server.</p>
       </div>
-      <ul id="profile-list" class="profile-list">
-        <!-- Rellenado por JS -->
-      </ul>
-      <p id="empty-hint" class="empty-hint hidden" data-i18n="empty_hint">
-        You don't have any profiles yet. Create one with "+ New profile" or import a .conf.
-      </p>
+      <div id="site-list" class="list"></div>
+
+      <div class="card default-row">
+        <div>
+          <b>Every other site</b>
+          <div class="dim small">Sites without their own pick go here.</div>
+        </div>
+        <select id="default-route"></select>
+      </div>
     </section>
 
-    <!-- Formulario de alta/edición (oculto por defecto) -->
-    <section id="form-section" class="form-section hidden">
-      <h2 id="form-title" data-i18n="form_new">New profile</h2>
-      <form id="profile-form" novalidate>
-        <input type="hidden" id="id" />
-
-        <div class="field">
-          <label for="name" data-i18n="field_name">Profile name</label>
-          <input type="text" id="name" data-i18n-ph="ph_name" autocomplete="off" />
-          <small class="error" data-for="name"></small>
+    <!-- Servers -->
+    <section id="tab-servers" class="tab hidden">
+      <header class="head">
+        <div>
+          <h1>Servers</h1>
+          <p class="dim">Your WireGuard servers. A server only connects while some site uses it.</p>
         </div>
+      </header>
 
-        <fieldset>
-          <legend data-i18n="legend_interface">Interface</legend>
+      <div id="drop" class="card drop" tabindex="0">
+        <div class="drop-icon">⤓</div>
+        <b>Drop WireGuard config files here</b>
+        <span class="dim">or <button class="link" id="pick-file">choose files</button> or <button class="link" id="show-paste">paste a config</button></span>
+        <input type="file" id="file" accept=".conf,text/plain" multiple hidden />
+      </div>
 
-          <div class="field">
-            <label for="privateKey" data-i18n="field_private_key">Private key (PrivateKey)</label>
-            <input type="text" id="privateKey" data-i18n-ph="ph_key" autocomplete="off" spellcheck="false" />
-            <small class="error" data-for="privateKey"></small>
-          </div>
-
-          <div class="field">
-            <label for="address" data-i18n="field_address">Tunnel address (Address)</label>
-            <input type="text" id="address" placeholder="10.0.0.2/32" spellcheck="false" />
-            <small class="error" data-for="address"></small>
-          </div>
-
-          <div class="field-row">
-            <div class="field">
-              <label for="dns">DNS <span class="opt" data-i18n="opt_optional">(optional)</span></label>
-              <input type="text" id="dns" placeholder="1.1.1.1" spellcheck="false" />
-              <small class="error" data-for="dns"></small>
-            </div>
-            <div class="field">
-              <label for="mtu">MTU <span class="opt" data-i18n="opt_optional">(optional)</span></label>
-              <input type="number" id="mtu" placeholder="1280" min="576" max="65535" />
-              <small class="error" data-for="mtu"></small>
-            </div>
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend data-i18n="legend_peer">Remote peer</legend>
-
-          <div class="field">
-            <label for="publicKey" data-i18n="field_public_key">Peer public key (PublicKey)</label>
-            <input type="text" id="publicKey" data-i18n-ph="ph_key" autocomplete="off" spellcheck="false" />
-            <small class="error" data-for="publicKey"></small>
-          </div>
-
-          <div class="field">
-            <label for="endpoint" data-i18n="field_endpoint">Endpoint (host:UDP port)</label>
-            <input type="text" id="endpoint" placeholder="vpn.example.com:51820" spellcheck="false" />
-            <small class="error" data-for="endpoint"></small>
-          </div>
-
-          <div class="field">
-            <label for="allowedIPs" data-i18n="field_allowed_ips">AllowedIPs</label>
-            <input type="text" id="allowedIPs" placeholder="0.0.0.0/0" spellcheck="false" />
-            <small class="hint" data-i18n="hint_allowed_ips">Use 0.0.0.0/0 to route all traffic.</small>
-            <small class="error" data-for="allowedIPs"></small>
-          </div>
-
-          <div class="field-row">
-            <div class="field">
-              <label for="presharedKey">PresharedKey <span class="opt" data-i18n="opt_optional">(optional)</span></label>
-              <input type="text" id="presharedKey" data-i18n-ph="ph_key" autocomplete="off" spellcheck="false" />
-              <small class="error" data-for="presharedKey"></small>
-            </div>
-            <div class="field">
-              <label for="persistentKeepalive">Keepalive <span class="opt" data-i18n="opt_optional">(optional)</span></label>
-              <input type="number" id="persistentKeepalive" placeholder="25" min="0" max="65535" />
-              <small class="error" data-for="persistentKeepalive"></small>
-            </div>
-          </div>
-        </fieldset>
-
-        <div class="form-actions">
-          <button type="button" id="btn-cancel" class="btn btn-ghost" data-i18n="btn_cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary" data-i18n="btn_save">Save</button>
+      <form id="paste-form" class="card paste hidden">
+        <input type="text" id="paste-name" placeholder="Name, like Home or Vietnam" />
+        <textarea id="paste-text" rows="10" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = ...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = ..."></textarea>
+        <div class="row-end">
+          <button class="btn" type="button" id="cancel-paste">Cancel</button>
+          <button class="btn btn-primary" type="submit">Add server</button>
         </div>
       </form>
+      <div id="server-error" class="notice bad hidden"></div>
+      <div id="server-ok" class="notice ok hidden"></div>
+
+      <div id="server-list" class="list"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="tab hidden">
+      <header class="head"><div><h1>Settings</h1></div></header>
+
+      <div class="card settings">
+        <label class="setting">
+          <div><b>WireRoute on</b><div class="dim small">Off sends every site out your normal connection.</div></div>
+          <span class="switch"><input type="checkbox" data-setting="enabled" /><span></span></span>
+        </label>
+        <label class="setting">
+          <div><b>Kill switch</b><div class="dim small">If a site's server goes down, block the site instead of using your real connection.</div></div>
+          <span class="switch"><input type="checkbox" data-setting="killSwitch" /><span></span></span>
+        </label>
+        <label class="setting">
+          <div><b>Block WebRTC leaks</b><div class="dim small">Stops sites finding your real IP through video-call tech. Browser calls (Meet, Zoom web) may get a little laggier.</div></div>
+          <span class="switch"><input type="checkbox" data-setting="blockWebRTC" /><span></span></span>
+        </label>
+        <label class="setting">
+          <div><b>Home network stays direct</b><div class="dim small">Your router page, printers and other local devices never go through a VPN.</div></div>
+          <span class="switch"><input type="checkbox" data-setting="lanDirect" /><span></span></span>
+        </label>
+      </div>
+
+      <div class="card settings">
+        <div class="setting">
+          <div><b>Backup</b><div class="dim small">Sites, detected addresses and settings. Server keys are only included if you tick the box.</div></div>
+          <div class="backup">
+            <label class="small"><input type="checkbox" id="with-keys" /> include server keys</label>
+            <button class="btn" id="export">Export</button>
+            <button class="btn" id="import">Import</button>
+            <input type="file" id="import-file" accept=".json,application/json" hidden />
+          </div>
+        </div>
+        <div class="setting">
+          <div><b>Forget detected addresses</b><div class="dim small">They'll be detected again next time you visit each site.</div></div>
+          <button class="btn btn-danger" id="forget-all">Forget all</button>
+        </div>
+      </div>
+      <p class="faint small" id="about"></p>
     </section>
   </main>
 

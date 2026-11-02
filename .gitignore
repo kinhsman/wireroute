@@ -1,22 +1,6 @@
-# Binarios compilados del host
-host/wireguardext-host
-host/wireguardext-host.exe
-host/host
-
-# Go
-vendor/
-
-# Salida del empaquetado
-dist/
-
-# Metadato interno de herramientas
-.zcode/
-
-# Clave pública de la extensión (respaldo local; va embebida en manifest.json)
-.wireguardext-public-key.pem.txt
-
-# macOS / editor
+host/wireroute-host
+host/fakevpn
+node_modules/
+*.pem
 .DS_Store
-*.swp
-.idea/
-.vscode/
+.icon-profile/

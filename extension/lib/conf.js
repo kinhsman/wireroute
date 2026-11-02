@@ -1,193 +1,107 @@
-// conf.js — Importar y exportar perfiles desde/a archivos .conf de WireGuard.
+// conf.js: read WireGuard .conf files into server objects.
 //
-// Formato .conf (INI con secciones [Interface] y [Peer]):
 //   [Interface]
 //   PrivateKey = <base64>
-//   Address = 10.0.0.2/32
-//   DNS = 1.1.1.1
-//   MTU = 1280
-//
+//   Address = 10.0.0.2/32, fd00::2/128
+//   DNS = 1.1.1.1, 1.0.0.1
 //   [Peer]
 //   PublicKey = <base64>
-//   Endpoint = vpn.midominio.com:51820
-//   AllowedIPs = 0.0.0.0/0
-//   PresharedKey = <base64>
-//   PersistentKeepalive = 25
+//   Endpoint = home.example.com:51820
+//   AllowedIPs = 0.0.0.0/0, ::/0
 //
-// Si hay varios [Peer], se generan varios perfiles (todos comparten la misma
-// interfaz). Las claves de wg-quick no relevantes (Table, PostUp, ListenPort...)
-// se ignoran silenciosamente.
+// Only the first [Peer] is used: one server per file. wg-quick extras
+// (PostUp, Table, ListenPort...) don't apply and are ignored.
 
-import { validateProfile } from "./validate.js";
+const KEY_RE = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$/;
 
-/**
- * Parsea el contenido de un .conf de WireGuard.
- * @param {string} text Contenido del archivo.
- * @returns {object[]} Array de perfiles (1 por cada [Peer]). Si no hay [Peer],
- *                     devuelve un perfil con peer vacío.
- */
-export function parseWireGuardConf(text) {
-  const { interface: iface, peers } = tokenize(text);
+export function isWgKey(k) {
+  return KEY_RE.test(String(k ?? "").trim());
+}
 
-  const baseInterface = {
-    privateKey: iface.PrivateKey ?? "",
-    address: firstIPv4(iface.Address) ?? iface.Address ?? "",
-    dns: firstDNS(iface.DNS) ?? "",
-    mtu: toInt(iface.MTU) || 0,
-  };
-
-  // Si no hay ningún [Peer], devolvemos un perfil con peer en blanco para que
-  // el usuario lo rellene.
-  if (peers.length === 0) {
-    return [
-      {
-        name: "",
-        interface: baseInterface,
-        peer: { publicKey: "", endpoint: "", allowedIPs: "0.0.0.0/0", presharedKey: "", persistentKeepalive: 0 },
-      },
-    ];
-  }
-
-  return peers.map((peer, i) => ({
-    name: "",
-    interface: baseInterface,
-    peer: {
-      publicKey: peer.PublicKey ?? "",
-      endpoint: peer.Endpoint ?? "",
-      allowedIPs: peer.AllowedIPs ?? "0.0.0.0/0",
-      presharedKey: peer.PresharedKey ?? "",
-      persistentKeepalive: toInt(peer.PersistentKeepalive) || 0,
-    },
-  }));
+function list(v) {
+  return String(v ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /**
- * Tokeniza el texto en secciones {interface, peers}.
- * @param {string} text
+ * Parse .conf text. Throws an Error with a plain-English message when the
+ * file can't be used.
+ * @returns {{privateKey, addresses, dns, mtu, publicKey, presharedKey, endpoint, allowedIPs, keepalive}}
  */
-function tokenize(text) {
-  const lines = text.split(/\r?\n/);
-  let current = null; // "interface" | "peer" | null
+export function parseConf(text) {
   const iface = {};
   const peers = [];
+  let section = null;
   let peer = null;
-
-  for (const raw of lines) {
-    let line = raw.trim();
-    if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
-
-    // Sección [Interface] / [Peer]
-    const section = line.match(/^\[(.+)\]$/);
-    if (section) {
-      const name = section[1].toLowerCase();
-      if (name === "interface") {
-        current = "interface";
-      } else if (name === "peer") {
-        if (peer) peers.push(peer);
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.replace(/\s+#.*$/, "").trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const sec = line.match(/^\[(.+)\]$/);
+    if (sec) {
+      section = sec[1].trim().toLowerCase();
+      if (section === "peer") {
         peer = {};
-        current = "peer";
-      } else {
-        current = null; // sección desconocida
+        peers.push(peer);
       }
       continue;
     }
-
-    // Clave = valor
     const eq = line.indexOf("=");
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim().toLowerCase();
     const value = line.slice(eq + 1).trim();
-
-    if (current === "interface") {
-      iface[key] = value;
-    } else if (current === "peer") {
-      peer[key] = value;
-    }
+    if (section === "interface") iface[key] = value;
+    else if (section === "peer" && peer) peer[key] = value;
   }
-  if (peer) peers.push(peer);
 
-  return { interface: iface, peers };
+  if (!iface.privatekey) throw new Error("This file has no PrivateKey, so it isn't a WireGuard client config.");
+  if (peers.length === 0) throw new Error("This file has no [Peer] section.");
+  const p = peers[0];
+  const server = {
+    privateKey: iface.privatekey,
+    addresses: list(iface.address),
+    dns: list(iface.dns).filter((d) => /^[0-9a-f.:]+$/i.test(d)),
+    mtu: Number(iface.mtu) || 0,
+    publicKey: p.publickey ?? "",
+    presharedKey: p.presharedkey ?? "",
+    endpoint: p.endpoint ?? "",
+    allowedIPs: list(p.allowedips),
+    keepalive: Number(p.persistentkeepalive) || 0,
+  };
+  const problems = checkServer(server);
+  if (problems.length) throw new Error(problems.join(" "));
+  return server;
 }
 
-/**
- * Convierte un perfil a texto .conf de WireGuard.
- * @param {object} profile
- * @returns {string}
- */
-export function profileToConf(profile) {
-  const i = profile.interface ?? {};
-  const p = profile.peer ?? {};
-  const out = ["[Interface]"];
-  if (i.privateKey) out.push(`PrivateKey = ${i.privateKey}`);
-  if (i.address) out.push(`Address = ${i.address}`);
-  if (i.dns) out.push(`DNS = ${i.dns}`);
-  if (i.mtu) out.push(`MTU = ${i.mtu}`);
-  out.push("");
-  out.push("[Peer]");
-  if (p.publicKey) out.push(`PublicKey = ${p.publicKey}`);
-  if (p.endpoint) out.push(`Endpoint = ${p.endpoint}`);
-  if (p.allowedIPs) out.push(`AllowedIPs = ${p.allowedIPs}`);
-  if (p.presharedKey) out.push(`PresharedKey = ${p.presharedKey}`);
-  if (p.persistentKeepalive) out.push(`PersistentKeepalive = ${p.persistentKeepalive}`);
-  out.push("");
-  return out.join("\n");
-}
-
-/**
- * Importa archivos .conf: parsea, valida y devuelve resultados por archivo.
- * No modifica el storage; el llamador decide qué guardar.
- * @param {File[]} files
- * @returns {Promise<{file: string, profile?: object, error?: string}[]>}
- */
-export async function importConfFiles(files) {
-  const results = [];
-  for (const file of files) {
-    try {
-      const text = await file.text();
-      const profiles = parseWireGuardConf(text);
-      const baseName = file.name.replace(/\.conf$/i, "");
-
-      // Un .conf puede producir varios perfiles (múltiples [Peer]).
-      for (const profile of profiles) {
-        // Nombre por defecto: el del fichero (con sufijo si hay varios peers).
-        if (!profile.name) {
-          profile.name = profiles.length > 1 ? `${baseName} (${profiles.indexOf(profile) + 1})` : baseName;
-        }
-        const { valid, errors } = validateProfile(profile);
-        if (!valid) {
-          results.push({ file: file.name, error: formatErrors(errors) });
-          continue;
-        }
-        delete profile.id;
-        results.push({ file: file.name, profile });
-      }
-    } catch (e) {
-      results.push({ file: file.name, error: e.message });
-    }
+/** Plain-English problems with a server's settings (empty when fine). */
+export function checkServer(s) {
+  const out = [];
+  if (!isWgKey(s.privateKey)) out.push("The PrivateKey doesn't look like a WireGuard key.");
+  if (!isWgKey(s.publicKey)) out.push("The server's PublicKey doesn't look like a WireGuard key.");
+  if (s.presharedKey && !isWgKey(s.presharedKey)) out.push("The PresharedKey doesn't look like a WireGuard key.");
+  if (!s.addresses?.length) out.push("The config has no Address.");
+  if (!/^(\[[0-9a-f:]+\]|[a-z0-9.-]+):\d{1,5}$/i.test(s.endpoint ?? "")) {
+    out.push("The Endpoint should look like myhome.example.com:51820.");
   }
-  return results;
+  return out;
 }
 
-// --- Helpers ---
-
-/** De "10.0.0.2/32, fd00::2/128" toma el primer IPv4 (o el primero si no hay v4). */
-function firstIPv4(address) {
-  if (!address) return null;
-  const parts = address.split(",").map((s) => s.trim());
-  return parts.find((p) => !p.includes(":")) ?? parts[0] ?? null;
+/** Back to .conf text, for the Export button. */
+export function toConf(s) {
+  const lines = ["[Interface]", `PrivateKey = ${s.privateKey}`, `Address = ${s.addresses.join(", ")}`];
+  if (s.dns?.length) lines.push(`DNS = ${s.dns.join(", ")}`);
+  if (s.mtu) lines.push(`MTU = ${s.mtu}`);
+  lines.push("", "[Peer]", `PublicKey = ${s.publicKey}`);
+  if (s.presharedKey) lines.push(`PresharedKey = ${s.presharedKey}`);
+  lines.push(`Endpoint = ${s.endpoint}`);
+  lines.push(`AllowedIPs = ${(s.allowedIPs?.length ? s.allowedIPs : ["0.0.0.0/0", "::/0"]).join(", ")}`);
+  if (s.keepalive) lines.push(`PersistentKeepalive = ${s.keepalive}`);
+  return lines.join("\n") + "\n";
 }
 
-/** De "1.1.1.1, 8.8.8.8" toma el primer DNS (ignora puertos tipo 1.1.1.1:53). */
-function firstDNS(dns) {
-  if (!dns) return null;
-  return dns.split(",")[0].trim();
-}
-
-function toInt(v) {
-  const n = Number(v);
-  return Number.isInteger(n) ? n : 0;
-}
-
-function formatErrors(errors) {
-  return Object.values(errors).join("; ");
+/** Country code ("US") to a flag emoji. */
+export function flag(cc) {
+  if (!/^[A-Za-z]{2}$/.test(cc ?? "")) return "🌐";
+  return String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 0x1f1a5 + c.charCodeAt(0)));
 }

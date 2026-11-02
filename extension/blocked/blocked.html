@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Blocked by WireRoute</title>
+  <link rel="stylesheet" href="../lib/ui.css" />
+  <style>
+    body { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+    .box { max-width: 460px; padding: 28px; text-align: center; }
+    .shield { font-size: 44px; }
+    h1 { font-size: 20px; margin: 10px 0 8px; }
+    p { margin: 0 0 14px; }
+    .actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+    #site { word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="card box">
+    <div class="shield">🛡️</div>
+    <h1>VPN down, site blocked</h1>
+    <p><b id="site"></b> is set to go through <b id="server">its VPN server</b>, which isn't connected right now.</p>
+    <p class="dim">Your real connection was not used. This page reloads by itself when the server is back.</p>
+    <p id="detail" class="faint small"></p>
+    <div class="actions">
+      <button class="btn btn-primary" id="retry">Try again</button>
+      <button class="btn" id="settings">Open WireRoute</button>
+    </div>
+  </div>
+  <script type="module" src="blocked.js"></script>
+</body>
+</html>

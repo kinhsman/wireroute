@@ -1,95 +1,80 @@
 package main
 
-import "net/netip"
+// Version is reported to the extension on hello so the UI can show it and
+// warn when the extension and helper drift apart.
+const Version = "1.0.0"
 
-// HostVersion es la versión del native messaging host.
-// Se mantiene alineada con la versión de la extensión (manifest.json):
-// extensión y host se versionan juntos como una unidad.
-const HostVersion = "0.2.4"
+// Route values. Anything else is a server ID.
+const (
+	RouteDirect = "direct"
+)
 
-// NativeMessagingHost es el nombre registrado del host. Debe coincidir con:
-//   - el campo "name" del manifest de Native Messaging (com.wireguardext.host.json)
-//   - el string pasado a chrome.runtime.connectNative en la extensión
-const NativeMessagingHost = "com.wireguardext.host"
-
-// Profile representa una configuración VPN completa tal como la envía la extensión
-// y como la consume wireproxy. Es el equivalente en memoria de un .conf de WireGuard.
-type Profile struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-
-	Interface InterfaceConfig `json:"interface"`
-	Peer      PeerConfig      `json:"peer"`
+// ServerConf is one WireGuard server ("peer") as the extension stores it.
+// Keys are base64, exactly as they appear in a .conf file.
+type ServerConf struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	PrivateKey   string   `json:"privateKey"`
+	Addresses    []string `json:"addresses"`
+	DNS          []string `json:"dns"`
+	MTU          int      `json:"mtu"`
+	PublicKey    string   `json:"publicKey"`
+	PresharedKey string   `json:"presharedKey"`
+	Endpoint     string   `json:"endpoint"`
+	AllowedIPs   []string `json:"allowedIPs"`
+	Keepalive    int      `json:"keepalive"`
 }
 
-// InterfaceConfig corresponde a la sección [Interface] de wireproxy.
-type InterfaceConfig struct {
-	// PrivateKey en base64 (32 bytes). Obligatorio.
-	PrivateKey string `json:"privateKey"`
-	// Address es la IP virtual del túnel con máscara, ej. "10.0.0.2/32".
-	Address string `json:"address"`
-	// DNS opcional, ej. "1.1.1.1".
-	DNS string `json:"dns"`
-	// MTU opcional. 0 = usar default de wireproxy (1400).
-	MTU int `json:"mtu"`
+// Rule sends a site (and, unless Exact, all its subdomains) through Route.
+type Rule struct {
+	ID      string `json:"id"`
+	Pattern string `json:"pattern"`
+	Exact   bool   `json:"exact"`
+	Route   string `json:"route"`
 }
 
-// PeerConfig corresponde a la sección [Peer] de wireproxy.
-type PeerConfig struct {
-	// PublicKey del peer remoto en base64 (32 bytes). Obligatorio.
-	PublicKey string `json:"publicKey"`
-	// Endpoint en formato host:puerto (UDP). Obligatorio.
-	Endpoint string `json:"endpoint"`
-	// AllowedIPs como string CIDR, normalmente "0.0.0.0/0".
-	AllowedIPs string `json:"allowedIPs"`
-	// PresharedKey opcional en base64.
-	PresharedKey string `json:"presharedKey"`
-	// PersistentKeepalive opcional en segundos. 0 = desactivado.
-	PersistentKeepalive int `json:"persistentKeepalive"`
+// Config is the whole routing picture. The extension sends it on every change.
+type Config struct {
+	Servers      []ServerConf      `json:"servers"`
+	Rules        []Rule            `json:"rules"`
+	Learned      map[string]string `json:"learned"` // host -> rule ID
+	DefaultRoute string            `json:"defaultRoute"`
+	KillSwitch   bool              `json:"killSwitch"`
+	LanDirect    bool              `json:"lanDirect"`
+	HoldMs       int               `json:"holdMs"`
 }
 
-// --- Mensajes del protocolo Native Messaging ---
-// Codificación: 4 bytes little-endian con la longitud del payload UTF-8 JSON,
-// seguidos del payload. Estándar de Chrome.
-
-// IncomingMessage es cualquier mensaje que el host recibe de la extensión.
-// El campo Command determina el tipo de Payload.
-type IncomingMessage struct {
-	Command string `json:"command"`
-
-	// Payload presente solo en "start".
-	Profile   *Profile `json:"profile,omitempty"`
-	SocksPort int      `json:"socksPort,omitempty"` // 0 = puerto automático
+// Incoming is any message from the extension.
+type Incoming struct {
+	ID     int     `json:"id,omitempty"`
+	Cmd    string  `json:"cmd"`
+	Port   int     `json:"port,omitempty"`
+	Config *Config `json:"config,omitempty"`
+	Host   string  `json:"host,omitempty"`
+	Rule   string  `json:"rule,omitempty"`
+	Server string  `json:"server,omitempty"`
 }
 
-// OutgoingMessage es cualquier mensaje que el host envía a la extensión.
-type OutgoingMessage struct {
-	Type string `json:"type"`
-
-	// pong
-	Version string `json:"version,omitempty"`
-
-	// started / status
-	SocksPort   int    `json:"socksPort,omitempty"`
-	Running     bool   `json:"running,omitempty"`
-	ProfileName string `json:"profileName,omitempty"`
-
-	// error
-	Message string `json:"message,omitempty"`
-	Code    string `json:"code,omitempty"`
-
-	// log
-	Level string `json:"level,omitempty"`
+// TunnelStatus is what the UI shows for one server.
+type TunnelStatus struct {
+	Server        string `json:"server"`
+	State         string `json:"state"` // starting | up | down | error
+	Error         string `json:"error,omitempty"`
+	LastHandshake int64  `json:"lastHandshake,omitempty"` // unix seconds
+	RxBytes       int64  `json:"rxBytes"`
+	TxBytes       int64  `json:"txBytes"`
 }
 
-// --- Helpers de conversión Profile -> tipos de wireproxy ---
-
-// toWireguardDeviceAddresses parsea Address ("10.0.0.2/32") en una lista de
-// direcciones netip.Addr (la parte de red se descarta para CreateNetTUN).
-func (p *Profile) toWireguardDeviceAddresses() ([]netip.Addr, error) {
-	prefix, err := netip.ParsePrefix(p.Interface.Address)
-	if err != nil {
-		return nil, err
-	}
-	return []netip.Addr{prefix.Addr()}, nil
+// Outgoing is any message to the extension. ID echoes the request it answers;
+// events (type "tunnel") carry no ID.
+type Outgoing struct {
+	ID      int            `json:"id,omitempty"`
+	Type    string         `json:"type"`
+	Error   string         `json:"error,omitempty"`
+	Version string         `json:"version,omitempty"`
+	Port    int            `json:"port,omitempty"`
+	Tunnels []TunnelStatus `json:"tunnels,omitempty"`
+	Tunnel  *TunnelStatus  `json:"tunnel,omitempty"`
+	IP      string         `json:"ip,omitempty"`
+	Loc     string         `json:"loc,omitempty"`
 }

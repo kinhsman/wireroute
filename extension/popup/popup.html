@@ -1,39 +1,71 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
+  <title>WireRoute</title>
+  <link rel="stylesheet" href="../lib/ui.css" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
-  <header class="header">
-    <h1 data-i18n="popup_title">WireGuardExt</h1>
-    <div id="status-badge" class="badge badge-off" data-i18n="status_disconnected">Disconnected</div>
+  <header class="top">
+    <div class="brand"><img src="../icons/icon-48.png" alt="" /> WireRoute</div>
+    <label class="switch" title="Turn WireRoute on or off">
+      <input type="checkbox" id="enabled" />
+      <span></span>
+    </label>
   </header>
 
-  <div class="body">
-    <label class="field-label" for="profile-select" data-i18n="profiles">Profile</label>
-    <select id="profile-select" class="select"></select>
-
-    <button id="btn-toggle" class="btn-toggle" disabled>
-      <span class="dot"></span>
-      <span class="label" data-i18n="btn_connect">Connect</span>
-    </button>
-
-    <div id="meta" class="meta hidden"></div>
-
-    <div id="error" class="error hidden"></div>
-
-    <!-- Estado: host nativo no instalado. Se muestra cuando el primer ping
-         falla; el usuario debe instalar el componente host aparte. -->
-    <div id="host-missing" class="host-missing hidden">
-      <p class="host-missing-title" data-i18n="host_missing_title">Host component not installed</p>
-      <p class="host-missing-desc" data-i18n="host_missing_desc">WireGuardExt needs a small companion app to route traffic. Install it, then reload this popup.</p>
-      <button id="btn-install-host" class="btn btn-primary" data-i18n="host_missing_cta">Install the host component</button>
+  <main>
+    <div id="helper-missing" class="notice bad hidden">
+      The WireRoute helper isn't installed on this Mac, so nothing can be routed yet.
+      <button class="link" id="open-setup">How to fix</button>
     </div>
-  </div>
+    <div id="helper-down" class="notice warn hidden">
+      The helper isn't running. <button class="link" id="reconnect">Try again</button>
+    </div>
+    <div id="off" class="notice warn hidden">WireRoute is off. Every site goes out your normal connection.</div>
+    <div id="no-servers" class="card empty hidden">
+      <h2>Add your first server</h2>
+      <p class="dim">Drop in a WireGuard config file and you're set.</p>
+      <button class="btn btn-primary" id="add-server">Add a server</button>
+    </div>
 
-  <footer class="footer">
-    <button id="btn-options" class="link" data-i18n="btn_configure">Configure profiles</button>
+    <section id="site" class="card site hidden">
+      <div class="site-head">
+        <img id="favicon" alt="" width="28" height="28" />
+        <div class="site-names">
+          <h1 id="site-name"></h1>
+          <div id="host-name" class="faint"></div>
+        </div>
+        <span id="site-status" class="pill"></span>
+      </div>
+
+      <div class="label">This site goes through</div>
+      <div id="routes" class="routes" role="radiogroup" aria-label="Route for this site"></div>
+
+      <label id="exact-row" class="exact hidden">
+        <input type="checkbox" id="exact" />
+        <span>Only <b id="exact-host"></b>, not the rest of <b id="exact-site"></b></span>
+      </label>
+
+      <details id="detected" class="detected hidden">
+        <summary><span id="detected-count"></span></summary>
+        <ul id="detected-list"></ul>
+      </details>
+    </section>
+
+    <section id="no-site" class="card empty hidden">
+      <p class="dim">Open a website to pick a server for it.</p>
+    </section>
+
+    <section id="servers" class="card servers hidden">
+      <div class="label">Servers</div>
+      <ul id="server-list"></ul>
+    </section>
+  </main>
+
+  <footer>
+    <button class="btn" id="open-options">Sites &amp; servers</button>
   </footer>
 
   <script type="module" src="popup.js"></script>

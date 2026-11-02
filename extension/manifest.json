@@ -1,34 +1,35 @@
 {
   "manifest_version": 3,
-  "name": "__MSG_ext_name__",
-  "short_name": "WireGuardExt",
-  "version": "0.2.4",
-  "description": "__MSG_ext_description__",
-
-  "_key_doc": "Clave pública de la extensión (extraída del .crx de la Chrome Web Store). Fija el ID de extensión a 'ngfheojelhaaceelejicpkdfagmhkoam' aunque se cargue descomprimida, para que el native messaging host no haya que reinstalarlo. Este campo se elimina del .zip que se sube a la tienda (ver build/package.sh).",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAutcLdaeMYOaXP7JLXbsfbcFZErH3eiUMdDdBCl1wtctyJa/m72AWDCWlECKsC33PX/NUMXGcNtK6WOwVwaqrUJC4XwChtsyMNnNNUigUlYPtKZy2MmpRktIcZH76l7mtiqvKNsH6fHmo13AuMtM9M/VY1FRlxG4YiUaPX3478+o3CFG0GvbTnB6WCNWga9AGqe2hBz7u+l88Bf0iTMs4qOCXXxqfe6YObj8qUln0nFOGsAF/86AYczN/20xYm0DoqMuyrg0ElAex+h+xwOBqSdndk4qJrsZ9Tq/mGirbz/3gA8AdxmTJZs4BLSG/gRtts5ZHMKXrakW1GL7G38ukZwIDAQAB",
-  "default_locale": "en",
-  "homepage_url": "https://github.com/yoprogramo/wireguardext",
-  "author": "yoprogramo",
-  "minimum_chrome_version": "116",
+  "name": "WireRoute",
+  "short_name": "WireRoute",
+  "version": "1.0.0",
+  "description": "Send each website through the WireGuard server you pick. Hidden addresses a site uses follow it automatically.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkaPlg+RLWgVLeDqy+XF/9gfVQWSTY1yxy2k6KXUp1hoEp6AFAaLsH2FZE3uLXiwu8WhQS0ULyhgvmzWCdpkpSYMC8PEp+wIRHF2MMyxAq3/5okZfvhmqS6Td1r8OQ1DyVKiOeA+YrUCIWmWHKOMsJrVbjrATsJY7W2tGT9e+S9HG7CCrIrTJcxTuBr5Vv0YQQyQwpvPeSSgMaAhSSkOqm+BsOlCtPchMWKHsLv64umw0ExK/DPQ4HxhE0JW/9qTBdz33nYqONJWp6adaGF1oyjXUbrKazfEs8sM+iI0hhPtdZ7sPCaX+vnp+1K9U4vB8E70L2Jx35t3Jq/FhiBw0hwIDAQAB",
+  "minimum_chrome_version": "120",
 
   "permissions": [
     "proxy",
     "storage",
-    "nativeMessaging"
+    "nativeMessaging",
+    "webRequest",
+    "declarativeNetRequest",
+    "privacy",
+    "alarms",
+    "favicon"
   ],
-  "host_permissions": [],
+  "host_permissions": ["<all_urls>"],
 
   "background": {
-    "service_worker": "background/service-worker.js",
+    "service_worker": "background/sw.js",
     "type": "module"
   },
 
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "WireGuardExt",
+    "default_title": "WireRoute",
     "default_icon": {
       "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
       "48": "icons/icon-48.png",
       "128": "icons/icon-128.png"
     }
@@ -39,8 +40,16 @@
     "open_in_tab": true
   },
 
+  "web_accessible_resources": [
+    {
+      "resources": ["blocked/blocked.html"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
   "icons": {
     "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   }
