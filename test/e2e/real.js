@@ -2,7 +2,8 @@
 //
 //   node test/e2e/real.js [path/to/test-peer.conf]
 //
-// Uses a test-only peer (default ~/Downloads/wireroute-test.conf) so it never
+// Uses a test-only peer (default ~/Library/Application Support/WireRoute/
+// test-peer.conf, readable only by you) so it never
 // fights your own browsing over the same key. Sends ifconfig.io and tv360.vn
 // through that server, everything else direct, then browses like a person and
 // checks the always-true rules after each step.
@@ -15,7 +16,7 @@ import assert from "node:assert/strict";
 import { parseConf } from "../../extension/lib/conf.js";
 import { Browser, EXT_ID, ROOT, checkInvariants, finish, setup, sleep, step, until } from "./harness.js";
 
-const confPath = process.argv[2] ?? join(homedir(), "Downloads", "wireroute-test.conf");
+const confPath = process.argv[2] ?? join(homedir(), "Library", "Application Support", "WireRoute", "test-peer.conf");
 if (!existsSync(confPath)) {
   console.log(`No test key at ${confPath}. Add a peer in your WireGuard dashboard and save its config there.`);
   process.exit(2);

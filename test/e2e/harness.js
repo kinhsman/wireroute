@@ -256,7 +256,11 @@ export async function checkInvariants(b, ext, { t0, tabPrefix, allowBlocked = fa
     }
     // Badge.
     const badge = await b.evaluate(ext.sessionId, `chrome.action.getBadgeText({ tabId: ${tabId} })`);
-    const wantBadge = info.route === "direct" ? "" : info.usable ? SERVERS[info.route] : "!";
+    // The badge shows the server's short label (its country after a Check),
+    // else the first letters of its name.
+    const srv = ((await storage("servers")) ?? []).find((x) => x.id === info.route);
+    const short = srv ? (srv.label || srv.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "VPN").slice(0, 4) : "";
+    const wantBadge = info.route === "direct" ? "" : info.usable ? short : "!";
     if (badge !== wantBadge) problems.push(`badge "${badge}", expected "${wantBadge}"`);
   }
   if (problems.length) throw new Error(problems.join("\n"));
