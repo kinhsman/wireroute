@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -137,7 +136,10 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		Verbosef: func(string, ...any) {},
 		Errorf:   func(f string, a ...any) { logf("["+c.Name+"] "+f, a...) },
 	}
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
+	// The standard bind on every system. On Windows the default (RIO) bind
+	// treats an ICMP "port unreachable" (a server restarting) as fatal and
+	// stops receiving for good; Go's own UDP sockets switch that report off.
+	dev := device.NewDevice(tunDev, conn.NewStdNetBind(), logger)
 	if err := dev.IpcSet(b.String()); err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("configure tunnel: %w", err)
@@ -294,10 +296,10 @@ func (t *Tunnel) checkHealth() {
 	}
 }
 
-// knock opens and closes a TCP connection to the tunnel's DNS server. Any
-// answer, even "connection refused", proves the server is passing traffic;
-// only silence (a timeout) counts as a miss. knocked is false when the tunnel
-// has nothing to knock on.
+// knock opens and closes a TCP connection to the tunnel's DNS server. A
+// connection, or a "refused"/"reset" from the far end, proves the server is
+// passing traffic. Anything else (silence, a timeout, a local error) is a
+// miss. knocked is false when the tunnel has nothing to knock on.
 func (t *Tunnel) knock() (alive, knocked bool) {
 	if t.probeAddr == "" {
 		return false, false
@@ -309,11 +311,9 @@ func (t *Tunnel) knock() (alive, knocked bool) {
 		c.Close()
 		return true, true
 	}
-	var nerr net.Error
-	if ctx.Err() != nil || (errors.As(err, &nerr) && nerr.Timeout()) {
-		return false, true
-	}
-	return true, true
+	msg := strings.ToLower(err.Error())
+	answered := strings.Contains(msg, "refused") || strings.Contains(msg, "reset")
+	return answered && ctx.Err() == nil, true
 }
 
 func ageSecs(hs int64, now time.Time) int64 {

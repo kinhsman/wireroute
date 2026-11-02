@@ -58,8 +58,10 @@ func fakeServer(t *testing.T, name string, clientPub []byte) (pub []byte, port i
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
-	cfg := fmt.Sprintf("private_key=%s\nlisten_port=%d\npublic_key=%s\nallowed_ip=10.9.0.2/32\n",
+	dev := device.NewDevice(tunDev, conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
+	// The server sends keepalives too, so it keeps talking to a client that
+	// has gone away (TestServerSurvivesBouncedPackets relies on that).
+	cfg := fmt.Sprintf("private_key=%s\nlisten_port=%d\npublic_key=%s\nallowed_ip=10.9.0.2/32\npersistent_keepalive_interval=1\n",
 		hex.EncodeToString(priv), port, hex.EncodeToString(clientPub))
 	if err := dev.IpcSet(cfg); err != nil {
 		t.Fatal(err)
@@ -401,5 +403,38 @@ func TestKnockSeesALiveServer(t *testing.T) {
 	h.m.mu.Unlock()
 	if alive, knocked := tun.knock(); !knocked || !alive {
 		t.Fatalf("knock on a live server: alive=%v knocked=%v", alive, knocked)
+	}
+}
+
+// TestServerSurvivesBouncedPackets is the Windows failure seen in CI: a client
+// goes away, the server's packets to it bounce ("port unreachable"), and with
+// WireGuard's Windows RIO bind the receiving side stopped listening for good,
+// so the next connection never handshook. Both sides use the standard bind now.
+func TestServerSurvivesBouncedPackets(t *testing.T) {
+	clientPriv, clientPub := genKey(t)
+	serverPub, port, stop := fakeServer(t, "A", clientPub)
+	defer stop()
+	conf := serverConf("A", clientPriv, serverPub, port)
+	cfg := &Config{
+		Servers:      []ServerConf{conf},
+		Rules:        []Rule{{ID: "r1", Pattern: "10.9.0.1", Exact: true, Route: "A"}},
+		DefaultRoute: "direct",
+		KillSwitch:   true,
+		HoldMs:       100,
+	}
+
+	first := newHarness(t, cfg)
+	waitUp(t, first, "A")
+	if _, body := first.connect(t, "10.9.0.1:80"); body != "via-tunnel A" {
+		t.Fatalf("first client: got %q", body)
+	}
+	// The client goes away; the server keeps sending to its closed port.
+	first.m.stopAll()
+	time.Sleep(3 * time.Second)
+
+	second := newHarness(t, cfg)
+	waitUp(t, second, "A")
+	if _, body := second.connect(t, "10.9.0.1:80"); body != "via-tunnel A" {
+		t.Fatalf("new client after bounced packets: got %q", body)
 	}
 }

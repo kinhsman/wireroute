@@ -80,7 +80,7 @@ func run(name, dir string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), device.NewLogger(device.LogLevelError, name+": "))
+	dev := device.NewDevice(tunDev, conn.NewStdNetBind(), device.NewLogger(device.LogLevelError, name+": "))
 	cfg := fmt.Sprintf("private_key=%s\nlisten_port=%d\npublic_key=%s\nallowed_ip=10.9.0.2/32\n",
 		hex.EncodeToString(sPriv), port, hex.EncodeToString(cPub))
 	if err := dev.IpcSet(cfg); err != nil {
