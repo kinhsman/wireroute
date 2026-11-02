@@ -13,8 +13,7 @@
 
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { Browser, EXT_ID, ROOT, finish, setup, sleep, step, until } from "./harness.js";
-import { isShared, matchRule } from "../../extension/lib/hosts.js";
+import { Browser, EXT_ID, ROOT, checkInvariants, finish, setup, sleep, step, until } from "./harness.js";
 
 const { tmp, confs } = await setup(["A", "B"]);
 const b = new Browser(join(tmp, "profile"));
@@ -51,71 +50,7 @@ const tabIdOf = (prefix) =>
 const title = (page) => b.evaluate(page.sessionId, "document.title");
 const waitTitle = (page, re, what) => until(async () => re.test(await title(page)) && (await title(page)), what);
 
-/** Last decision per host since t0. */
-async function decisionsSince(t0) {
-  const map = new Map();
-  for (const d of await recent()) if (d.at >= t0) map.set(d.host, d);
-  return map;
-}
-
-/** Check everything that must always hold, after one journey. */
-async function invariants({ t0, tabPrefix, allowBlocked = false }) {
-  const problems = [];
-  const decided = await decisionsSince(t0);
-  const settings = await storage("settings");
-  const currentRules = await storage("rules");
-
-  for (const [host, d] of decided) {
-    if (d.route === "blocked" && !allowBlocked) problems.push(`${host} was blocked`);
-    const own = matchRule(currentRules, host);
-    if (own && d.route !== own.route && d.route !== "blocked") problems.push(`${host} has its own rule (${own.route}) but went ${d.route}`);
-    if (!own && isShared(host) && d.route !== settings.defaultRoute) problems.push(`shared ${host} followed a site (${d.route})`);
-  }
-
-  const learned = (await storage("learned")) ?? {};
-  for (const h of Object.keys(learned)) if (isShared(h)) problems.push(`shared ${h} was tagged to a site`);
-
-  if (tabPrefix) {
-    const tabId = await tabIdOf(tabPrefix);
-    const info = await b.ask(ext.sessionId, "tabInfo", { tabId });
-    // What the popup claims must match what the helper did.
-    const claims = [{ host: info.host, route: info.route }, ...info.hosts];
-    for (const c of claims) {
-      const d = decided.get(c.host);
-      if (d && d.route !== "blocked" && d.route !== c.route) problems.push(`popup says ${c.host} goes ${SERVERS[c.route] ?? c.route}, helper sent it ${SERVERS[d.route] ?? d.route}`);
-    }
-    // And the popup page itself must show that claim.
-    const pop = await b.openPage(`chrome-extension://${EXT_ID}/popup/popup.html?tab=${tabId}`);
-    const shown = await until(
-      () =>
-        b.evaluate(
-          pop.sessionId,
-          `(() => {
-            const pill = document.getElementById('site-status')?.textContent;
-            const checked = document.querySelector('.route[aria-checked="true"] .name')?.firstChild?.textContent;
-            const rows = [...document.querySelectorAll('#detected-list li')].map(li => [li.querySelector('.h').textContent, li.querySelector('.r').textContent]);
-            return pill ? { pill, checked, rows } : null;
-          })()`
-        ),
-      "popup render"
-    );
-    await b.close(pop);
-    const wantPill = info.route === "direct" ? "Not protected" : info.usable ? "Protected" : "Blocked, server down";
-    if (shown.pill !== wantPill) problems.push(`popup pill "${shown.pill}", expected "${wantPill}"`);
-    const wantChecked = info.rule ? SERVERS[info.rule.route] ?? "Direct" : "Automatic";
-    if (shown.checked !== wantChecked) problems.push(`popup has "${shown.checked}" selected, expected "${wantChecked}"`);
-    for (const [h, label] of shown.rows) {
-      const d = decided.get(h);
-      if (d && d.route !== "blocked" && !label.startsWith(SERVERS[d.route] ?? "Direct")) problems.push(`popup row ${h} says "${label}", helper sent it ${SERVERS[d.route]}`);
-    }
-    // Badge.
-    const badge = await b.evaluate(ext.sessionId, `chrome.action.getBadgeText({ tabId: ${tabId} })`);
-    const wantBadge = info.route === "direct" ? "" : info.usable ? SERVERS[info.route] : "!";
-    if (badge !== wantBadge) problems.push(`badge "${badge}", expected "${wantBadge}"`);
-  }
-  if (problems.length) throw new Error(problems.join("\n"));
-  return decided;
-}
+const invariants = (opts) => checkInvariants(b, ext, { names: SERVERS, ...opts });
 
 console.log("browsing like a person");
 

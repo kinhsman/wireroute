@@ -22,7 +22,11 @@ let helper = { connected: false, version: "", port: 0 };
 let tunnels = {}; // serverId -> {state, error, lastHandshake, rxBytes, txBytes}
 let pacNonce = Date.now();
 const tabSite = new Map(); // tabId -> host of the page in that tab
-const tabHosts = new Map(); // tabId -> {site, hosts: Set} of the page now in the tab
+// tabId -> Map(site -> Set of hosts that site's pages loaded in this tab).
+// Kept per site, not per "page now in the tab": requests from the page you
+// just left keep arriving after you click a link, and must not be blamed on
+// the new site.
+const tabPages = new Map();
 const hintSent = new Map(); // host -> {rule, at}
 
 // --- startup ---
@@ -373,29 +377,28 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (!info.url) return;
   ready.then(() => {
     const h = hostOf(info.url);
-    if (h) setTabPage(tabId, h, false);
-    else {
-      tabSite.delete(tabId);
-      tabHosts.delete(tabId);
-    }
+    if (h) tabSite.set(tabId, h);
+    else tabSite.delete(tabId);
     updateBadge(tabId);
   });
 });
-
-/**
- * The tab now shows a page of host. Its list of loaded addresses starts over
- * on a new page load, or when the tab moved to another site without one
- * (back/forward cache, a page Google preloaded from search results).
- */
-function setTabPage(tabId, host, newLoad) {
-  tabSite.set(tabId, host);
-  const cur = tabHosts.get(tabId);
-  if (newLoad || !cur || siteOf(cur.site) !== siteOf(host)) tabHosts.set(tabId, { site: host, hosts: new Set() });
-}
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabSite.delete(tabId);
-  tabHosts.delete(tabId);
+  tabPages.delete(tabId);
 });
+
+/** The addresses pages of site loaded in a tab (created on first use). */
+function pageHosts(tabId, site) {
+  let pages = tabPages.get(tabId);
+  if (!pages) tabPages.set(tabId, (pages = new Map()));
+  const key = siteOf(site);
+  let set = pages.get(key);
+  if (!set) {
+    pages.set(key, (set = new Set()));
+    if (pages.size > 4) pages.delete(pages.keys().next().value);
+  }
+  return set;
+}
 
 // --- auto-detect: who asked for what ---
 
@@ -431,26 +434,35 @@ function onRequest(d) {
   const host = hostOf(d.url);
   if (!host) return;
 
-  // Pages Google preloads from search results aren't in the tab yet.
-  const prerender = d.documentLifecycle === "prerender";
-  const inTab = d.tabId >= 0 && !prerender;
-  if (d.type === "main_frame" && inTab) {
-    setTabPage(d.tabId, host, true);
-    updateBadge(d.tabId);
-  } else if (inTab && tabSite.has(d.tabId)) {
-    setTabPage(d.tabId, tabSite.get(d.tabId), false);
-    const seen = tabHosts.get(d.tabId).hosts;
-    if (seen.size < MAX_TAB_HOSTS && host !== tabSite.get(d.tabId)) seen.add(host);
+  // Pages Google preloads from search results aren't shown in the tab yet.
+  const inTab = d.tabId >= 0 && d.documentLifecycle !== "prerender";
+
+  // The site this request belongs to. A page you open is its own site.
+  // Requests from a tab's main page carry the page that made them
+  // (initiator): trust that over "what the tab shows now", which flips the
+  // moment you click a link while the old page is still sending requests.
+  // Embedded frames belong to the page in their tab; workers to whoever
+  // started them.
+  let owner;
+  if (d.type === "main_frame") {
+    owner = host;
+    if (inTab) {
+      tabSite.set(d.tabId, host);
+      tabPages.get(d.tabId)?.delete(siteOf(host)); // a fresh load starts its list over
+      updateBadge(d.tabId);
+    }
+  } else {
+    const initiator = hostOf(d.initiator ?? "");
+    if (d.frameId === 0 && initiator) owner = initiator;
+    else if (inTab && tabSite.has(d.tabId)) owner = tabSite.get(d.tabId);
+    else owner = initiator;
+    if (d.tabId >= 0 && owner && host !== owner) {
+      const seen = pageHosts(d.tabId, owner);
+      if (seen.size < MAX_TAB_HOSTS) seen.add(host);
+    }
   }
 
   if (!cfg.settings.enabled) return;
-  // The site this request belongs to: a page you open is its own site; other
-  // requests belong to the page in their tab, or (workers, preloaded pages)
-  // to the page that started them.
-  let owner;
-  if (d.type === "main_frame") owner = host;
-  else if (inTab && tabSite.has(d.tabId)) owner = tabSite.get(d.tabId);
-  else owner = hostOf(d.initiator ?? "");
   if (matchRule(cfg.rules, host)) return; // has its own rule; the helper knows
   // Shared services (Google, analytics, CDNs) never follow a site.
   let rule = owner && !isShared(host) ? matchRule(cfg.rules, owner) : null;
@@ -539,7 +551,7 @@ async function handle(msg) {
       if (!host) return { host: "" };
       const site = siteOf(host);
       const rule = matchRule(cfg.rules, host);
-      const others = [...(tabHosts.get(msg.tabId)?.hosts ?? [])].filter((h) => h !== host).sort();
+      const others = [...(tabPages.get(msg.tabId)?.get(siteOf(host)) ?? [])].filter((h) => h !== host).sort();
       const truth = await explain([host, ...others], host);
       const r = truth.get(host);
       const hosts = others.map((h) => {
@@ -564,13 +576,13 @@ async function handle(msg) {
         ruleId = store.newId();
         rules.push({ id: ruleId, pattern, exact: !!msg.exact, route: msg.route, autoFollow: true });
       }
-      // What the page in this tab already loaded follows the site right away
-      // (only if the tab really shows that site).
-      const page = msg.tabId != null ? tabHosts.get(msg.tabId) : null;
+      // What this site's pages already loaded in the tab follows it right
+      // away (only if the tab really shows that site).
+      const shown = msg.tabId != null ? tabSite.get(msg.tabId) : null;
       const rule = rules.find((r) => r.id === ruleId);
-      if (rule && page && matchRule([rule], page.site)) {
-        for (const h of page.hosts) {
-          if (h !== page.site && !matchRule(rules, h) && !isShared(h)) cfg.learned[h] = ruleId;
+      if (rule && shown && matchRule([rule], shown)) {
+        for (const h of tabPages.get(msg.tabId)?.get(siteOf(shown)) ?? []) {
+          if (h !== shown && !matchRule(rules, h) && !isShared(h)) cfg.learned[h] = ruleId;
         }
         await store.save({ learned: cfg.learned });
       }

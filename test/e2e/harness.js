@@ -3,10 +3,11 @@
 // protocol. Nothing here touches your normal Chrome profile or the Mac's network.
 
 import { spawn, execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConf } from "../../extension/lib/conf.js";
+import { isShared, matchRule } from "../../extension/lib/hosts.js";
 
 export const ROOT = resolve(import.meta.dirname, "../..");
 export const EXT_ID = "kbmajebcnniiphhhhhgafeipmpibcnjc";
@@ -15,6 +16,17 @@ const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/M
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;
+
+// Tests must never leave anything in your folders.
+const DOWNLOADS = join(homedir(), "Downloads");
+const listDownloads = () => {
+  try {
+    return new Set(readdirSync(DOWNLOADS));
+  } catch {
+    return new Set();
+  }
+};
+const downloadsBefore = listDownloads();
 const procs = [];
 let tmpRoot = null;
 
@@ -30,6 +42,13 @@ export async function step(name, fn) {
 }
 
 export function finish() {
+  const added = [...listDownloads()].filter((f) => !downloadsBefore.has(f));
+  // Only count files a test could have made (another app may save something meanwhile).
+  const ours = added.filter((f) => /\.(conf|json)$/i.test(f));
+  if (ours.length) {
+    failures++;
+    console.log(`  FAIL test left files in your Downloads folder: ${ours.join(", ")}`);
+  }
   console.log(failures ? `\n${failures} failed` : "\nall passed");
   process.exit(failures ? 1 : 0);
 }
@@ -126,6 +145,8 @@ export class Browser {
     });
     this.proc.stdio[3].on("error", () => {});
     await this.cdp("Target.setDiscoverTargets", { discover: true });
+    // Downloads (Export buttons) must never land in your folders.
+    await this.cdp("Browser.setDownloadBehavior", { behavior: "deny" });
   }
 
   cdp(method, params = {}, sessionId) {
@@ -168,4 +189,76 @@ export class Browser {
     await this.cdp("Browser.close").catch(() => {});
     await Promise.race([this.exited, sleep(10000)]);
   }
+}
+
+/**
+ * Check everything that must always hold after a stretch of browsing, against
+ * the helper's own log of what it did since t0. names maps server IDs to the
+ * names shown in the popup. Throws listing every problem found.
+ */
+export async function checkInvariants(b, ext, { t0, tabPrefix, allowBlocked = false, names = {} }) {
+  const SERVERS = names;
+  const storage = (key) => b.evaluate(ext.sessionId, `chrome.storage.local.get('${key}').then(x => x['${key}'])`);
+  const tabIdOf = (prefix) =>
+    b.evaluate(ext.sessionId, `chrome.tabs.query({}).then(ts => ts.find(t => (t.url || '').startsWith(${JSON.stringify(prefix)}))?.id)`);
+  const decisionsSince = async (since) => {
+    const map = new Map();
+    for (const d of await b.ask(ext.sessionId, "recent")) if (d.at >= since) map.set(d.host, d);
+    return map;
+  };
+  const problems = [];
+  const decided = await decisionsSince(t0);
+  const settings = await storage("settings");
+  const currentRules = await storage("rules");
+
+  for (const [host, d] of decided) {
+    if (d.route === "blocked" && !allowBlocked) problems.push(`${host} was blocked`);
+    const own = matchRule(currentRules, host);
+    if (own && d.route !== own.route && d.route !== "blocked") problems.push(`${host} has its own rule (${own.route}) but went ${d.route}`);
+    if (!own && isShared(host) && d.route !== settings.defaultRoute) problems.push(`shared ${host} followed a site (${d.route})`);
+  }
+
+  const learned = (await storage("learned")) ?? {};
+  for (const h of Object.keys(learned)) if (isShared(h)) problems.push(`shared ${h} was tagged to a site`);
+
+  if (tabPrefix) {
+    const tabId = await tabIdOf(tabPrefix);
+    const info = await b.ask(ext.sessionId, "tabInfo", { tabId });
+    // What the popup claims must match what the helper did.
+    const claims = [{ host: info.host, route: info.route }, ...info.hosts];
+    for (const c of claims) {
+      const d = decided.get(c.host);
+      if (d && d.route !== "blocked" && d.route !== c.route) problems.push(`popup says ${c.host} goes ${SERVERS[c.route] ?? c.route}, helper sent it ${SERVERS[d.route] ?? d.route}`);
+    }
+    // And the popup page itself must show that claim.
+    const pop = await b.openPage(`chrome-extension://${EXT_ID}/popup/popup.html?tab=${tabId}`);
+    const shown = await until(
+      () =>
+        b.evaluate(
+          pop.sessionId,
+          `(() => {
+            const pill = document.getElementById('site-status')?.textContent;
+            const checked = document.querySelector('.route[aria-checked="true"] .name')?.firstChild?.textContent;
+            const rows = [...document.querySelectorAll('#detected-list li')].map(li => [li.querySelector('.h').textContent, li.querySelector('.r').textContent]);
+            return pill ? { pill, checked, rows } : null;
+          })()`
+        ),
+      "popup render"
+    );
+    await b.close(pop);
+    const wantPill = info.route === "direct" ? "Not protected" : info.usable ? "Protected" : "Blocked, server down";
+    if (shown.pill !== wantPill) problems.push(`popup pill "${shown.pill}", expected "${wantPill}"`);
+    const wantChecked = info.rule ? SERVERS[info.rule.route] ?? "Direct" : "Automatic";
+    if (shown.checked !== wantChecked) problems.push(`popup has "${shown.checked}" selected, expected "${wantChecked}"`);
+    for (const [h, label] of shown.rows) {
+      const d = decided.get(h);
+      if (d && d.route !== "blocked" && !label.startsWith(SERVERS[d.route] ?? "Direct")) problems.push(`popup row ${h} says "${label}", helper sent it ${SERVERS[d.route]}`);
+    }
+    // Badge.
+    const badge = await b.evaluate(ext.sessionId, `chrome.action.getBadgeText({ tabId: ${tabId} })`);
+    const wantBadge = info.route === "direct" ? "" : info.usable ? SERVERS[info.route] : "!";
+    if (badge !== wantBadge) problems.push(`badge "${badge}", expected "${wantBadge}"`);
+  }
+  if (problems.length) throw new Error(problems.join("\n"));
+  return decided;
 }
