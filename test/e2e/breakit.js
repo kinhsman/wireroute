@@ -247,10 +247,7 @@ await step("Chrome quits and starts again: everything comes back with no clicks"
   assert.ok(fromChrome.length > 0, "Chrome's request never reached the helper");
   assert.ok(fromChrome.every((d) => d.route === "srvA"), "example.net went " + JSON.stringify(fromChrome));
   assert.ok(!r.startsWith("real"), "real site loaded after restart: leak");
-  // The page itself can be refused by your company's Code42 extension, which
-  // force-installs into every profile after its first restart and blocks the
-  // secure-connection upgrade Chrome then tries. That's outside WireRoute.
-  if (r !== "via A") console.log(`       note: page showed "${r}" (blocked by another extension), routing itself was correct`);
+  assert.equal(r, "via A");
 });
 
 finish();

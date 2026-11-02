@@ -178,7 +178,7 @@ export class Browser {
         "--enable-unsafe-extension-debugging",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-features=HttpsUpgrades",
+        "--disable-features=HttpsUpgrades,HttpsFirstBalancedMode,HttpsFirstBalancedModeAutoEnable,HttpsFirstModeV2ForTypicallySecureUsers,HttpsFirstModeIncognito",
         "about:blank",
       ],
       { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] }
