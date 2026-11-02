@@ -571,7 +571,7 @@ async function handle(msg) {
       if (!native.isConnected()) throw new Error("The helper isn't running");
       const res = await native.request({ cmd: "check", server: msg.server }, 20000);
       const { checks } = await store.load(["checks"]);
-      checks[msg.server] = { ip: res.ip, loc: res.loc, at: Date.now() };
+      checks[msg.server] = { ip: res.ip, loc: res.loc, at: Date.now(), sameAsYou: !!res.directIP && res.directIP === res.ip };
       await store.save({ checks });
       const s = serverById(msg.server);
       if (s && !s.label && res.loc) {

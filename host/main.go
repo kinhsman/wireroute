@@ -270,7 +270,8 @@ func (m *manager) handle(msg *Incoming) {
 				reply(Outgoing{Type: "error", Error: "check failed: " + err.Error()})
 				return
 			}
-			reply(Outgoing{Type: "check", IP: ip, Loc: loc})
+			direct, _, _ := DirectCheck(ctx)
+			reply(Outgoing{Type: "check", IP: ip, Loc: loc, DirectIP: direct})
 		}()
 
 	default:

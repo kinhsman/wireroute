@@ -265,11 +265,23 @@ func (t *Tunnel) readStats() (hs, rx, tx int64) {
 // ExitCheck asks Cloudflare, through the tunnel, which IP and country the
 // world sees. It proves the tunnel works end to end.
 func (t *Tunnel) ExitCheck(ctx context.Context) (ip, loc string, err error) {
+	return cfTrace(ctx, t.Dial)
+}
+
+// DirectCheck is ExitCheck for your normal connection, to compare against.
+func DirectCheck(ctx context.Context) (ip, loc string, err error) {
+	d := net.Dialer{Timeout: 10 * time.Second}
+	return cfTrace(ctx, func(ctx context.Context, addr string) (net.Conn, error) {
+		return d.DialContext(ctx, "tcp", addr)
+	})
+}
+
+func cfTrace(ctx context.Context, dial func(context.Context, string) (net.Conn, error)) (ip, loc string, err error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-				return t.Dial(ctx, addr)
+				return dial(ctx, addr)
 			},
 		},
 	}

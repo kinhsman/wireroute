@@ -70,7 +70,11 @@ function render() {
     ...servers.map((s) => {
       const st = stateText(state.tunnels[s.id]);
       const check = checks[s.id];
-      const sub = check ? `Shows as ${check.ip}` : st.text;
+      const sub = check?.sameAsYou
+        ? `⚠️ Shows your own address (${check.ip})`
+        : check
+          ? `Shows as ${check.ip}`
+          : st.text;
       const btn = el("button", { class: "btn btn-sm", title: "Check which IP and country sites see" }, "Check");
       btn.addEventListener("click", async () => {
         btn.disabled = true;

@@ -77,4 +77,7 @@ type Outgoing struct {
 	Tunnel  *TunnelStatus  `json:"tunnel,omitempty"`
 	IP      string         `json:"ip,omitempty"`
 	Loc     string         `json:"loc,omitempty"`
+	// DirectIP is your own address, so the UI can warn when a server comes
+	// out onto the internet as you.
+	DirectIP string `json:"directIP,omitempty"`
 }

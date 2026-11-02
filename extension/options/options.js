@@ -201,7 +201,11 @@ function renderServers() {
           el(
             "span",
             { class: "server-stats" },
-            check ? `Sites see ${check.ip}${check.loc ? " (" + check.loc + ")" : ""}` : "Not checked yet",
+            check
+              ? check.sameAsYou
+                ? `⚠️ Sites see ${check.ip}, your own address: this server sends its traffic back out through your network`
+                : `Sites see ${check.ip}${check.loc ? " (" + check.loc + ")" : ""}`
+              : "Not checked yet",
             ` · used by ${d.settings.defaultRoute === s.id ? "every other site" : `${usedBy[s.id] ?? 0} site${usedBy[s.id] === 1 ? "" : "s"}`}`,
             ` · badge shows "${s.label || "auto"}"`
           ),
