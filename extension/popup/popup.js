@@ -125,8 +125,10 @@ function renderSite() {
     {
       value: "default",
       icon: "⚙️",
-      name: "Default",
-      sub: `Same as other sites (${routeName(settings.defaultRoute)})`,
+      name: "Automatic",
+      sub: info.follows
+        ? `Goes with ${info.follows}, which uses it (${routeName(info.route)})`
+        : `Same as other sites (${routeName(settings.defaultRoute)})`,
     },
     { value: "direct", icon: "🏠", name: "Direct", sub: "Your normal connection, no VPN" },
     ...servers.map((s) => {

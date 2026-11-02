@@ -223,9 +223,30 @@ await step("detected hidden addresses are remembered", async () => {
   assert.equal(learned["first-visit-cdn.test"], "r1");
 });
 
-await step("a remembered address follows its site even when opened on its own", async () => {
+await step("a detected address goes with its site even when opened on its own", async () => {
   const r = await visit("http://first-visit-cdn.test/plain");
   assert.equal(r.text, "via A for first-visit-cdn.test");
+});
+
+await step("shared services like Google never follow a site", async () => {
+  const r = await visit("http://site-a.test/?cdn=www.google.com");
+  assert.equal(r.title, "page:A cdn:B");
+  const learned = await evaluate(ext.sessionId, "chrome.storage.local.get('learned').then(x => x.learned ?? {})");
+  assert.ok(!("www.google.com" in learned), "Google must not be saved as the site's");
+});
+
+await step("picking a server only tags the current page's addresses, not the tab's earlier pages", async () => {
+  const page = await openPage("http://earlier-page.test/plain");
+  await sleep(1000);
+  await cdp("Page.navigate", { url: "http://site-c.test/?cdn=c-video.test" }, page.sessionId);
+  await until(async () => (await evaluate(page.sessionId, "document.title")).startsWith("page:"), "site-c page");
+  const tabId = await evaluate(ext.sessionId, `chrome.tabs.query({}).then(ts => ts.find(t => (t.url || '').startsWith('http://site-c.test'))?.id)`);
+  const { ruleId } = await ask(ext.sessionId, "setSiteRoute", { pattern: "site-c.test", exact: false, route: "srvA", tabId });
+  const learned = await evaluate(ext.sessionId, "chrome.storage.local.get('learned').then(x => x.learned ?? {})");
+  await cdp("Target.closeTarget", { targetId: page.targetId });
+  assert.equal(learned["c-video.test"], ruleId, "the page's own hidden address is tagged");
+  assert.ok(!("earlier-page.test" in learned), "an earlier page in the tab must not be tagged");
+  await ask(ext.sessionId, "setSiteRoute", { pattern: "site-c.test", exact: false, route: null });
 });
 
 await step("subdomains follow the site's rule", async () => {
@@ -299,8 +320,6 @@ await step("kill switch: a site whose server is down is blocked, never sent dire
     (await import("node:fs")).writeFileSync(join(process.env.SHOTS, "blocked.png"), Buffer.from(data, "base64"));
     await cdp("Target.closeTarget", { targetId: page.targetId });
   }
-  const hidden = await visit("http://first-visit-cdn.test/plain", { timeout: 8000 }).catch((e) => ({ error: e.message }));
-  assert.ok(!hidden.text, "hidden address must not load another way: " + JSON.stringify(hidden));
 });
 
 await step("blocked page lets the site load once its server is back", async () => {

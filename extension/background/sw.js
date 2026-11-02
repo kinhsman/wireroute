@@ -22,7 +22,7 @@ let helper = { connected: false, version: "", port: 0 };
 let tunnels = {}; // serverId -> {state, error, lastHandshake, rxBytes, txBytes}
 let pacNonce = Date.now();
 const tabSite = new Map(); // tabId -> host of the page in that tab
-const tabHosts = new Map(); // tabId -> Set of hosts it loaded
+const tabHosts = new Map(); // tabId -> {site, hosts: Set} of the page now in the tab
 const hintSent = new Map(); // host -> {rule, at}
 
 // --- startup ---
@@ -40,10 +40,17 @@ async function init() {
 }
 
 chrome.runtime.onStartup.addListener(() => ready);
-chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+chrome.runtime.onInstalled.addListener(async ({ reason, previousVersion }) => {
   await ready;
   chrome.alarms.create("keepalive", { periodInMinutes: 1 });
   if (reason === "install") chrome.runtime.openOptionsPage();
+  if (reason === "update" && previousVersion === "1.0.0") {
+    // 1.0.0 could tag addresses from a tab's earlier pages (and Google) as a
+    // site's hidden addresses. Start clean; real ones are re-detected.
+    cfg.learned = {};
+    await store.save({ learned: {} });
+    await applyAll();
+  }
 });
 chrome.alarms.onAlarm.addListener(async () => {
   await ready;
@@ -275,12 +282,21 @@ async function updateBlockRules() {
 
 // --- badges ---
 
-function routeForHost(host) {
-  const rule = matchRule(activeRules(), host);
-  if (rule) return { route: rule.route, rule, why: "rule" };
-  const learnedRule = cfg.rules.find((r) => r.id === cfg.learned[host] && r.autoFollow !== false);
-  if (learnedRule && cfg.settings.enabled) return { route: learnedRule.route, rule: learnedRule, why: "detected" };
-  return { route: cfg.settings.enabled ? cfg.settings.defaultRoute : "direct", rule: null, why: "default" };
+/**
+ * Where host goes, as the helper will decide it: its own rule; else, unless
+ * it's a shared service, the site that uses it (the page it's loaded by, or
+ * the site it was detected for); else the default.
+ */
+function routeForHost(host, owner = host) {
+  if (!cfg.settings.enabled) return { route: "direct", rule: null, why: "off" };
+  const own = matchRule(cfg.rules, host);
+  if (own) return { route: own.route, rule: own, why: "rule" };
+  if (!isShared(host)) {
+    const viaPage = owner && owner !== host ? matchRule(cfg.rules, owner) : null;
+    const site = viaPage?.autoFollow !== false && viaPage ? viaPage : cfg.rules.find((r) => r.id === cfg.learned[host] && r.autoFollow !== false);
+    if (site) return { route: site.route, rule: site, why: "detected" };
+  }
+  return { route: cfg.settings.defaultRoute, rule: null, why: "default" };
 }
 
 function shortLabel(server) {
@@ -333,11 +349,25 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (!info.url) return;
   ready.then(() => {
     const h = hostOf(info.url);
-    if (h) tabSite.set(tabId, h);
-    else tabSite.delete(tabId);
+    if (h) setTabPage(tabId, h, false);
+    else {
+      tabSite.delete(tabId);
+      tabHosts.delete(tabId);
+    }
     updateBadge(tabId);
   });
 });
+
+/**
+ * The tab now shows a page of host. Its list of loaded addresses starts over
+ * on a new page load, or when the tab moved to another site without one
+ * (back/forward cache, a page Google preloaded from search results).
+ */
+function setTabPage(tabId, host, newLoad) {
+  tabSite.set(tabId, host);
+  const cur = tabHosts.get(tabId);
+  if (newLoad || !cur || siteOf(cur.site) !== siteOf(host)) tabHosts.set(tabId, { site: host, hosts: new Set() });
+}
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabSite.delete(tabId);
   tabHosts.delete(tabId);
@@ -358,7 +388,27 @@ function scheduleLearnedSave() {
   }, 1500);
 }
 
+// Addresses lots of sites share: search, analytics, ads, big CDNs. They still
+// follow a site live while it uses them, but are never saved as that site's,
+// or (say) Google would go through tv360.vn's server from every tab.
+const SHARED_SITES = new Set(
+  (
+    "google.com gstatic.com googleapis.com googleusercontent.com googletagmanager.com google-analytics.com " +
+    "googlesyndication.com googleadservices.com doubleclick.net recaptcha.net gvt1.com gvt2.com " +
+    "facebook.com facebook.net fbcdn.net instagram.com twitter.com x.com twimg.com tiktok.com " +
+    "cloudflare.com cloudflareinsights.com jsdelivr.net unpkg.com jquery.com bootstrapcdn.com fontawesome.com " +
+    "apple.com icloud.com microsoft.com bing.com clarity.ms hotjar.com sentry.io segment.io amplitude.com " +
+    "mixpanel.com newrelic.com nr-data.net dmca.com"
+  ).split(" ")
+);
+
+function isShared(host) {
+  const site = siteOf(host);
+  return SHARED_SITES.has(site) || /^google\.[a-z.]+$/.test(site);
+}
+
 function learn(host, ruleId) {
+  if (isShared(host)) return;
   if (cfg.learned[host] === ruleId) return;
   if (!(host in cfg.learned) && Object.keys(cfg.learned).length >= MAX_LEARNED) return;
   cfg.learned[host] = ruleId;
@@ -376,22 +426,29 @@ function onRequest(d) {
   const host = hostOf(d.url);
   if (!host) return;
 
-  if (d.type === "main_frame" && d.tabId >= 0) {
-    tabSite.set(d.tabId, host);
-    tabHosts.set(d.tabId, new Set([host]));
+  // Pages Google preloads from search results aren't in the tab yet.
+  const prerender = d.documentLifecycle === "prerender";
+  const inTab = d.tabId >= 0 && !prerender;
+  if (d.type === "main_frame" && inTab) {
+    setTabPage(d.tabId, host, true);
     updateBadge(d.tabId);
-  } else if (d.tabId >= 0) {
-    const seen = tabHosts.get(d.tabId) ?? new Set();
-    if (seen.size < MAX_TAB_HOSTS) seen.add(host);
-    tabHosts.set(d.tabId, seen);
+  } else if (inTab && tabSite.has(d.tabId)) {
+    setTabPage(d.tabId, tabSite.get(d.tabId), false);
+    const seen = tabHosts.get(d.tabId).hosts;
+    if (seen.size < MAX_TAB_HOSTS && host !== tabSite.get(d.tabId)) seen.add(host);
   }
 
   if (!cfg.settings.enabled) return;
-  // The site this request belongs to: the page in its tab, or for workers
-  // with no tab, the page that started it.
-  const owner = d.tabId >= 0 ? tabSite.get(d.tabId) ?? hostOf(d.initiator ?? "") : hostOf(d.initiator ?? "");
+  // The site this request belongs to: a page you open is its own site; other
+  // requests belong to the page in their tab, or (workers, preloaded pages)
+  // to the page that started them.
+  let owner;
+  if (d.type === "main_frame") owner = host;
+  else if (inTab && tabSite.has(d.tabId)) owner = tabSite.get(d.tabId);
+  else owner = hostOf(d.initiator ?? "");
   if (matchRule(cfg.rules, host)) return; // has its own rule; the helper knows
-  let rule = owner ? matchRule(cfg.rules, owner) : null;
+  // Shared services (Google, analytics, CDNs) never follow a site.
+  let rule = owner && !isShared(host) ? matchRule(cfg.rules, owner) : null;
   if (rule && rule.autoFollow === false) rule = null;
   const ruleId = rule?.id ?? "";
 
@@ -402,7 +459,7 @@ function onRequest(d) {
     hintSent.set(host, { rule: ruleId, at: now });
     if (hintSent.size > 50_000) hintSent.clear();
   }
-  if (ruleId) learn(host, ruleId);
+  if (ruleId && host !== owner) learn(host, ruleId);
 }
 
 // --- settings changed in the UI ---
@@ -471,11 +528,11 @@ async function handle(msg) {
       const site = siteOf(host);
       const rule = matchRule(cfg.rules, host);
       const r = routeForHost(host);
-      const hosts = [...(tabHosts.get(msg.tabId) ?? [])]
+      const hosts = [...(tabHosts.get(msg.tabId)?.hosts ?? [])]
         .filter((h) => h !== host)
-        .map((h) => ({ host: h, ...pick(routeForHost(h)) }))
+        .map((h) => ({ host: h, ...pick(routeForHost(h, host)) }))
         .sort((a, b) => a.host.localeCompare(b.host));
-      return { host, site, rule, route: r.route, why: r.why, usable: routeUsable(r.route), hosts };
+      return { host, site, rule, route: r.route, why: r.why, follows: r.why === "detected" ? r.rule.pattern : "", usable: routeUsable(r.route), hosts };
     }
 
     case "setSiteRoute": {
@@ -493,10 +550,13 @@ async function handle(msg) {
         ruleId = store.newId();
         rules.push({ id: ruleId, pattern, exact: !!msg.exact, route: msg.route, autoFollow: true });
       }
-      // Everything this tab already loaded follows the site right away.
-      if (ruleId && msg.tabId != null) {
-        for (const h of tabHosts.get(msg.tabId) ?? []) {
-          if (!matchRule(rules, h)) cfg.learned[h] = ruleId;
+      // What the page in this tab already loaded follows the site right away
+      // (only if the tab really shows that site).
+      const page = msg.tabId != null ? tabHosts.get(msg.tabId) : null;
+      const rule = rules.find((r) => r.id === ruleId);
+      if (rule && page && matchRule([rule], page.site)) {
+        for (const h of page.hosts) {
+          if (h !== page.site && !matchRule(rules, h) && !isShared(h)) cfg.learned[h] = ruleId;
         }
         await store.save({ learned: cfg.learned });
       }

@@ -2,7 +2,7 @@ package main
 
 // Version is reported to the extension on hello so the UI can show it and
 // warn when the extension and helper drift apart.
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 // Route values. Anything else is a server ID.
 const (
