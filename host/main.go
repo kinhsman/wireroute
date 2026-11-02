@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -24,12 +25,29 @@ func logf(format string, args ...any) {
 	}
 }
 
-func openLog() {
+// logDir is where the helper keeps its log: ~/Library/Logs/WireRoute on a
+// Mac, %LOCALAPPDATA%\WireRoute\Logs on Windows.
+func logDir() string {
+	if runtime.GOOS == "windows" {
+		if base := os.Getenv("LOCALAPPDATA"); base != "" {
+			return filepath.Join(base, "WireRoute", "Logs")
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
+		return ""
+	}
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Logs", "WireRoute")
+	}
+	return filepath.Join(home, ".local", "state", "wireroute")
+}
+
+func openLog() {
+	dir := logDir()
+	if dir == "" {
 		return
 	}
-	dir := filepath.Join(home, "Library", "Logs", "WireRoute")
 	_ = os.MkdirAll(dir, 0o700)
 	path := filepath.Join(dir, "helper.log")
 	if st, err := os.Stat(path); err == nil && st.Size() > 1<<20 {

@@ -44,6 +44,14 @@ local proxy in the helper (127.0.0.1, password protected)
 
 Uninstall the helper with `./install/install.sh --remove`.
 
+### Windows
+
+`./tools/package-windows.sh` (on a Mac or Linux box with Go) builds
+`dist/WireRoute-windows-<version>.zip`: the extension, the helper for x64 and
+ARM PCs, and `Install WireRoute.cmd`, which copies the helper to
+`%LOCALAPPDATA%\WireRoute` and registers it with Chrome, Edge and Brave in
+your user registry (no admin rights). `Uninstall WireRoute.cmd` undoes it.
+
 ## Tests
 
 ```bash
