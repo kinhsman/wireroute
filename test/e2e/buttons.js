@@ -90,6 +90,65 @@ await step("servers: check shows a clear error when the server can't reach the i
   await until(async () => (await text(opt, "#server-error")).includes("Alpha One"), "check error shown", 25000);
 });
 
+// --- Groups (Servers page) ---
+
+const groupCard = (name) => `[...document.querySelectorAll('[data-group]')].find(c => c.querySelector('.names b')?.textContent === '${name}')`;
+const members = async (name) => {
+  const g = ((await store("groups")) ?? []).find((x) => x.name === name);
+  const servers = await store("servers");
+  return g ? g.members.map((id) => servers.find((s) => s.id === id)?.name) : null;
+};
+
+await step("groups: create one", async () => {
+  await js(opt, `document.getElementById('group-name').value = 'Vietnam'; document.getElementById('add-group').requestSubmit(), true`);
+  await until(async () => (await members("Vietnam"))?.length === 0, "group saved");
+  await until(() => js(opt, `!!${groupCard("Vietnam")}`), "group card");
+});
+
+await step("groups: a second group with the same name is refused", async () => {
+  await js(opt, `document.getElementById('group-name').value = 'vietnam'; document.getElementById('add-group').requestSubmit(), true`);
+  await until(async () => (await text(opt, "#group-error")).includes("already"), "duplicate message");
+  assert.equal((await store("groups")).length, 1);
+});
+
+await step("groups: add servers, then change their order", async () => {
+  const addByName = (name) =>
+    js(opt, `(() => { const c = ${groupCard("Vietnam")}; const s = c.querySelector('.add-member select'); s.value = [...s.options].find(o => o.textContent.includes('${name}')).value; [...c.querySelectorAll('button')].find(b => b.textContent === 'Add server').click(); return true })()`);
+  await addByName("Alpha One");
+  await until(async () => (await members("Vietnam"))?.length === 1, "first added");
+  await addByName("B");
+  await until(async () => JSON.stringify(await members("Vietnam")) === JSON.stringify(["Alpha One", "B"]), "both added in order");
+  // Move B up: it becomes the one tried first.
+  await js(opt, `[...${groupCard("Vietnam")}.querySelectorAll('.members li')][1].querySelector('button[title="Try this one earlier"]').click(), true`);
+  await until(async () => JSON.stringify(await members("Vietnam")) === JSON.stringify(["B", "Alpha One"]), "B moved first");
+});
+
+await step("groups: show up in every server picker", async () => {
+  await js(opt, `location.hash = '#sites', true`);
+  await sleep(300);
+  const inSite = await js(opt, `[...document.getElementById('site-route').options].some(o => o.textContent.includes('Vietnam'))`);
+  const inDefault = await js(opt, `[...document.getElementById('default-route').options].some(o => o.textContent.includes('Vietnam'))`);
+  assert.ok(inSite && inDefault, "group missing from a picker");
+  await js(opt, `location.hash = '#servers', true`);
+  await sleep(300);
+});
+
+await step("groups: rename and take a server out", async () => {
+  await answer(opt, ["Viet", "vn"]);
+  await js(opt, `[...${groupCard("Vietnam")}.querySelectorAll('button')].find(b => b.textContent === 'Rename').click(), true`);
+  await until(async () => (await store("groups")).some((g) => g.name === "Viet" && g.label === "VN"), "renamed");
+  await until(() => js(opt, `!!${groupCard("Viet")}`), "card renamed");
+  await js(opt, `[...${groupCard("Viet")}.querySelectorAll('.members li')].find(li => li.textContent.includes('Alpha One')).querySelector('.btn-danger').click(), true`);
+  await until(async () => JSON.stringify(await members("Viet")) === JSON.stringify(["B"]), "Alpha One taken out");
+});
+
+await step("groups: delete", async () => {
+  await answer(opt, [], true);
+  await js(opt, `[...${groupCard("Viet")}.querySelectorAll('button')].find(b => b.textContent === 'Delete').click(), true`);
+  await until(async () => (await store("groups")).length === 0, "deleted");
+  assert.ok((await store("servers")).some((s) => s.name === "B"), "its servers stay");
+});
+
 // --- Sites page ---
 
 await js(opt, `location.hash = '#sites', true`);

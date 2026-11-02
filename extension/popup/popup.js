@@ -40,7 +40,7 @@ async function loadAll() {
   // ?tab=<id> picks a tab explicitly (used by the screenshot test).
   const forced = Number(new URLSearchParams(location.search).get("tab"));
   [tab] = forced ? [await chrome.tabs.get(forced)] : await chrome.tabs.query({ active: true, currentWindow: true });
-  const saved = await store.load(["servers", "rules", "settings", "checks"]);
+  const saved = await store.load(["servers", "groups", "rules", "settings", "checks"]);
   const state = await store.ask("state");
   const info = tab ? await store.ask("tabInfo", { tabId: tab.id, url: tab.url }) : { host: "" };
   data = { ...saved, state, info };
@@ -48,7 +48,18 @@ async function loadAll() {
 
 function routeName(route) {
   if (route === "direct") return "Direct";
-  return data.servers.find((s) => s.id === route)?.name ?? "Missing server";
+  return (data.servers.find((s) => s.id === route) ?? data.groups.find((g) => g.id === route))?.name ?? "Missing server";
+}
+
+/** How a group is doing: which server it uses, or how many are up. */
+function groupState(g, via) {
+  const states = g.members.map((id) => data.state.tunnels[id]?.state);
+  const up = states.filter((s) => s === "up").length;
+  if (via) return { text: `Using ${routeName(via)}`, cls: "ok" };
+  if (states.every((s) => !s)) return { text: "Off until a site uses it", cls: "" };
+  if (up === 0 && states.some((s) => s === "starting")) return { text: "Connecting", cls: "warn" };
+  if (up === 0) return { text: "All servers down", cls: "bad" };
+  return { text: `${up} of ${g.members.length} servers up`, cls: "ok" };
 }
 
 function render() {
@@ -112,9 +123,10 @@ function renderSite() {
   } else if (info.usable) {
     status.className = "pill ok";
     status.textContent = "Protected";
+    if (info.via) status.title = `Using ${routeName(info.via)}`;
   } else {
     status.className = "pill bad";
-    status.textContent = "Blocked, server down";
+    status.textContent = data.groups.some((g) => g.id === info.route) ? "Blocked, all servers down" : "Blocked, server down";
   }
 
   // Scope: whole site (with subdomains) or this exact address.
@@ -135,6 +147,11 @@ function renderSite() {
         : `Same as other sites (${routeName(settings.defaultRoute)})`,
     },
     { value: "direct", icon: "🏠", name: "Direct", sub: "Your normal connection, no VPN" },
+    ...data.groups.map((g) => {
+      const st = groupState(g, info.route === g.id ? info.via : "");
+      const lead = checks[info.route === g.id && info.via ? info.via : g.members[0]]?.loc;
+      return { value: g.id, icon: lead ? flag(lead) : "🔁", name: g.name, sub: st.text, cls: st.cls };
+    }),
     ...servers.map((s) => {
       const st = stateText(state.tunnels[s.id]);
       return { value: s.id, icon: flag(checks[s.id]?.loc), name: s.name, sub: st.text, cls: st.cls };

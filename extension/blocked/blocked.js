@@ -16,12 +16,14 @@ async function check() {
       location.replace(target);
       return;
     }
-    if (s.server) document.getElementById("server").textContent = s.server;
+    if (s.server) document.getElementById("server").textContent = s.group ? `the ${s.server} group` : s.server;
     document.getElementById("detail").textContent = s.helperMissing
       ? "The WireRoute helper isn't installed."
       : !s.helperConnected
         ? "The WireRoute helper isn't running."
-        : s.error || (s.state === "down" ? "The server isn't answering." : "");
+        : s.group
+          ? "None of its servers are answering."
+          : s.error || (s.state === "down" ? "The server isn't answering." : "");
   } catch {
     /* worker waking up; next tick */
   }

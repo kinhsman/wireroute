@@ -34,7 +34,7 @@ const hintSent = new Map(); // host -> {rule, at}
 const ready = init();
 
 async function init() {
-  cfg = await store.load(["servers", "rules", "learned", "settings"]);
+  cfg = await store.load(["servers", "groups", "rules", "learned", "settings"]);
   secret = await store.getSecret();
   await seedTabs();
   await applyProxy();
@@ -158,6 +158,7 @@ async function sendConfig() {
     servers: cfg.servers.map(({ id, name, privateKey, addresses, dns, mtu, publicKey, presharedKey, endpoint, allowedIPs, keepalive }) => ({
       id, name, privateKey, addresses, dns, mtu, publicKey, presharedKey, endpoint, allowedIPs, keepalive,
     })),
+    groups: cfg.groups.map(({ id, name, members }) => ({ id, name, members: members.filter((m) => serverById(m)) })),
     rules: activeRules().map(({ id, pattern, exact, route }) => ({ id, pattern, exact: !!exact, route })),
     learned: on ? activeLearned() : {},
     defaultRoute: on ? cfg.settings.defaultRoute : "direct",
@@ -209,12 +210,28 @@ function serverById(id) {
   return cfg.servers.find((s) => s.id === id);
 }
 
-/** Can traffic for this route go out right now? */
+function groupById(id) {
+  return cfg.groups.find((g) => g.id === id);
+}
+
+/** What a route points at, by name: a server, a group, or Direct. */
+function routeName(route) {
+  if (route === "direct") return "Direct";
+  return serverById(route)?.name ?? groupById(route)?.name ?? "";
+}
+
+function serverUsable(id) {
+  if (!serverById(id) || !helper.connected) return false;
+  const st = tunnels[id]?.state;
+  return st === "up" || st === "starting";
+}
+
+/** Can traffic for this route go out right now? A group can while any member can. */
 function routeUsable(route) {
   if (route === "direct") return true;
-  if (!serverById(route) || !helper.connected) return false;
-  const st = tunnels[route]?.state;
-  return st === "up" || st === "starting";
+  const group = groupById(route);
+  if (group) return group.members.some(serverUsable);
+  return serverUsable(route);
 }
 
 function escapeRe(s) {
@@ -316,7 +333,7 @@ async function explain(hosts, owner) {
       for (const e of res.routes ?? []) {
         const rule = e.rule ? cfg.rules.find((r) => r.id === e.rule) ?? null : null;
         const why = e.why === "rule" ? "rule" : rule ? "detected" : "default";
-        out.set(e.host, { route: e.route, why, rule });
+        out.set(e.host, { route: e.route, why, rule, via: e.via ?? "" });
       }
       return out;
     } catch {
@@ -327,9 +344,10 @@ async function explain(hosts, owner) {
   return out;
 }
 
-function shortLabel(server) {
-  if (server.label) return server.label.slice(0, 4);
-  return server.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "VPN";
+/** Badge text for a server or group: its label, else its name's first letters. */
+function shortLabel(item) {
+  if (item.label) return item.label.slice(0, 4);
+  return item.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "VPN";
 }
 
 async function updateBadge(tabId) {
@@ -341,7 +359,7 @@ async function updateBadge(tabId) {
   } else if (host) {
     const { route } = (await explain([host])).get(host);
     if (route !== "direct") {
-      const s = serverById(route);
+      const s = serverById(route) ?? groupById(route);
       if (s && routeUsable(route)) {
         text = shortLabel(s);
         color = "#188038";
@@ -486,8 +504,8 @@ let learnedPacTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   ready.then(() => {
-    const main = ["servers", "rules", "settings"].some((k) => k in changes);
-    for (const k of ["servers", "rules", "settings"]) {
+    const main = ["servers", "groups", "rules", "settings"].some((k) => k in changes);
+    for (const k of ["servers", "groups", "rules", "settings"]) {
       if (k in changes) cfg[k] = k === "settings" ? { ...store.DEFAULT_SETTINGS, ...changes[k].newValue } : changes[k].newValue ?? [];
     }
     if ("learned" in changes && !learnedDirty) cfg.learned = changes.learned.newValue ?? {};
@@ -554,11 +572,16 @@ async function handle(msg) {
       const others = [...(tabPages.get(msg.tabId)?.get(siteOf(host)) ?? [])].filter((h) => h !== host).sort();
       const truth = await explain([host, ...others], host);
       const r = truth.get(host);
-      const hosts = others.map((h) => {
-        const t = truth.get(h);
-        return { host: h, route: t.route, why: t.why, follows: t.why === "detected" ? t.rule.pattern : "", usable: routeUsable(t.route) };
+      // via: for a group, the server it's using right now.
+      const describe = (t) => ({
+        route: t.route,
+        why: t.why,
+        follows: t.why === "detected" ? t.rule.pattern : "",
+        usable: routeUsable(t.route),
+        via: groupById(t.route) ? t.via ?? "" : "",
       });
-      return { host, site, rule, route: r.route, why: r.why, follows: r.why === "detected" ? r.rule.pattern : "", usable: routeUsable(r.route), hosts };
+      const hosts = others.map((h) => ({ host: h, ...describe(truth.get(h)) }));
+      return { host, site, rule, ...describe(r), hosts };
     }
 
     case "setSiteRoute": {
@@ -610,10 +633,10 @@ async function handle(msg) {
     case "blockStatus": {
       const host = hostOf(msg.url ?? "");
       const { route } = routeForHost(host);
-      const s = serverById(route);
       return {
         blocked: cfg.settings.enabled && cfg.settings.killSwitch && route !== "direct" && !routeUsable(route),
-        server: s?.name ?? "",
+        server: routeName(route),
+        group: !!groupById(route),
         helperMissing: native.isMissing(),
         helperConnected: helper.connected,
         state: tunnels[route]?.state ?? "",

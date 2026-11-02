@@ -39,7 +39,7 @@ window.addEventListener("hashchange", showTab);
 // --- data ---
 
 async function load() {
-  const saved = await store.load(["servers", "rules", "learned", "settings", "checks"]);
+  const saved = await store.load(["servers", "groups", "rules", "learned", "settings", "checks"]);
   let state = { helper: { connected: false, missing: false }, tunnels: {} };
   try {
     state = await store.ask("state");
@@ -58,10 +58,14 @@ function routeOptions(selected, { withDefault = false } = {}) {
   const opts = [];
   if (withDefault) opts.push(el("option", { value: "default", selected: selected === "default" }, "Default"));
   opts.push(el("option", { value: "direct", selected: selected === "direct" }, "🏠 Direct (no VPN)"));
+  for (const g of d.groups) {
+    opts.push(el("option", { value: g.id, selected: selected === g.id }, `🔁 ${g.name} (group)`));
+  }
   for (const s of d.servers) {
     opts.push(el("option", { value: s.id, selected: selected === s.id }, `${flag(d.checks[s.id]?.loc)} ${s.name}`));
   }
-  if (selected && selected !== "default" && selected !== "direct" && !d.servers.some((s) => s.id === selected)) {
+  const known = (id) => d.servers.some((s) => s.id === id) || d.groups.some((g) => g.id === id);
+  if (selected && selected !== "default" && selected !== "direct" && !known(selected)) {
     opts.push(el("option", { value: selected, selected: true }, "⚠️ Deleted server"));
   }
   return opts;
@@ -92,6 +96,7 @@ function render() {
 
   renderSites();
   renderServers();
+  renderGroups();
   renderSettings();
 }
 
@@ -207,6 +212,7 @@ function renderServers() {
                 : `Sites see ${check.ip}${check.loc ? " (" + check.loc + ")" : ""}`
               : "Not checked yet",
             ` · used by ${d.settings.defaultRoute === s.id ? "every other site" : `${usedBy[s.id] ?? 0} site${usedBy[s.id] === 1 ? "" : "s"}`}`,
+            ...d.groups.filter((g) => g.members.includes(s.id)).map((g) => ` · in group ${g.name}`),
             ` · badge shows "${s.label || "auto"}"`
           ),
           el("span", { class: "spacer" }),
@@ -366,13 +372,132 @@ async function renameServer(s) {
 }
 
 async function removeServer(s, uses) {
+  const inGroups = d.groups.filter((g) => g.members.includes(s.id)).map((g) => g.name);
+  const parts = [`Delete ${s.name}?`];
+  if (uses) parts.push(`${uses} site setting${uses === 1 ? " uses" : "s use"} it. Those sites will be blocked until you pick another server.`);
+  if (inGroups.length) parts.push(`It will also be taken out of ${inGroups.join(", ")}.`);
+  if (!confirm(parts.join(" "))) return;
+  await change(async () => {
+    const { servers, groups } = await fresh(["servers", "groups"]);
+    await store.save({
+      servers: servers.filter((x) => x.id !== s.id),
+      groups: groups.map((g) => ({ ...g, members: g.members.filter((m) => m !== s.id) })),
+    });
+    await refresh();
+  });
+}
+
+// --- groups ---
+
+/** How a group is doing, from its members' states. */
+function groupState(g) {
+  const states = g.members.map((id) => d.state.tunnels[id]?.state);
+  const up = states.filter((x) => x === "up").length;
+  if (!g.members.length) return ["warn", "No servers yet"];
+  if (states.every((x) => !x)) return ["", "Off until a site uses it"];
+  if (up === 0 && states.some((x) => x === "starting")) return ["warn", "Connecting"];
+  if (up === 0) return ["bad", "All servers down"];
+  return ["ok", `${up} of ${g.members.length} up`];
+}
+
+function renderGroups() {
+  const usedBy = {};
+  for (const r of d.rules) usedBy[r.route] = (usedBy[r.route] ?? 0) + 1;
+  const serverName = (id) => d.servers.find((s) => s.id === id)?.name ?? "Deleted server";
+  $("group-list").replaceChildren(
+    ...d.groups.map((g) => {
+      const [cls, text] = groupState(g);
+      const uses = (usedBy[g.id] ?? 0) + (d.settings.defaultRoute === g.id ? 1 : 0);
+      const others = d.servers.filter((s) => !g.members.includes(s.id));
+      const addSelect = el("select", { "aria-label": `Server to add to ${g.name}` }, ...others.map((s) => el("option", { value: s.id }, `${flag(d.checks[s.id]?.loc)} ${s.name}`)));
+      const members = g.members.length
+        ? g.members.map((id, i) => {
+            const st = d.state.tunnels[id]?.state;
+            const dot = st === "up" ? "ok" : st === "starting" ? "warn" : st ? "bad" : "";
+            return el(
+              "li",
+              {},
+              el("span", { class: "grow" }, `${flag(d.checks[id]?.loc)} ${serverName(id)}`),
+              el("span", { class: "dot " + dot, title: st ?? "off" }),
+              el("button", { class: "btn btn-sm", title: "Try this one earlier", disabled: i === 0, onclick: () => moveMember(g.id, i, -1) }, "↑"),
+              el("button", { class: "btn btn-sm", title: "Try this one later", disabled: i === g.members.length - 1, onclick: () => moveMember(g.id, i, 1) }, "↓"),
+              el("button", { class: "btn btn-sm btn-danger", title: "Take out of this group", onclick: () => removeMember(g.id, id) }, "Remove")
+            );
+          })
+        : [el("li", { class: "empty-note" }, "Add servers below. The first one is used while it's up.")];
+      return el(
+        "div",
+        { class: "card item", "data-group": g.id },
+        el(
+          "div",
+          { class: "item-main" },
+          el("span", { class: "icon" }, "🔁"),
+          el("div", { class: "names" }, el("b", {}, g.name), el("span", {}, `used by ${uses} site setting${uses === 1 ? "" : "s"} · badge shows "${g.label || "auto"}"`)),
+          el("span", { class: "pill " + cls }, el("span", { class: "dot " + cls }), text)
+        ),
+        el("ol", { class: "members" }, ...members),
+        others.length
+          ? el("div", { class: "add-member" }, addSelect, el("button", { class: "btn btn-sm", onclick: () => addMember(g.id, addSelect.value) }, "Add server"))
+          : null,
+        el(
+          "div",
+          { class: "item-opts" },
+          el("span", { class: "spacer" }),
+          el("button", { class: "btn btn-sm", onclick: () => renameGroup(g) }, "Rename"),
+          el("button", { class: "btn btn-sm btn-danger", onclick: () => removeGroup(g, uses) }, "Delete")
+        )
+      );
+    })
+  );
+}
+
+const updateGroup = (id, fn) =>
+  change(async () => {
+    const { groups } = await fresh(["groups"]);
+    await store.save({ groups: groups.map((g) => (g.id === id ? fn(g) : g)) });
+    await refresh();
+  });
+
+const addMember = (id, serverId) => serverId && updateGroup(id, (g) => (g.members.includes(serverId) ? g : { ...g, members: [...g.members, serverId] }));
+const removeMember = (id, serverId) => updateGroup(id, (g) => ({ ...g, members: g.members.filter((m) => m !== serverId) }));
+const moveMember = (id, index, by) =>
+  updateGroup(id, (g) => {
+    const members = [...g.members];
+    const to = index + by;
+    if (to < 0 || to >= members.length) return g;
+    [members[index], members[to]] = [members[to], members[index]];
+    return { ...g, members };
+  });
+
+$("add-group").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("group-name").value.trim();
+  change(async () => {
+    if (!name) return showNotice("group-error", "Give the group a name, like Vietnam.");
+    const { groups } = await fresh(["groups"]);
+    if (groups.some((g) => g.name.toLowerCase() === name.toLowerCase())) return showNotice("group-error", `There's already a group called ${name}.`);
+    showNotice("group-error", "");
+    await store.save({ groups: [...groups, { id: store.newId(), name, label: "", members: [] }] });
+    $("group-name").value = "";
+    await refresh();
+  });
+});
+
+async function renameGroup(g) {
+  const name = prompt("Name for this group", g.name);
+  if (name === null || !name.trim()) return;
+  const label = prompt("Short badge text (up to 4 letters, like VN). Leave empty to use the name.", g.label ?? "");
+  await updateGroup(g.id, (x) => ({ ...x, name: name.trim(), label: (label ?? x.label ?? "").trim().slice(0, 4).toUpperCase() }));
+}
+
+async function removeGroup(g, uses) {
   const msg = uses
-    ? `Delete ${s.name}? ${uses} site setting${uses === 1 ? " uses" : "s use"} it. Those sites will be blocked until you pick another server.`
-    : `Delete ${s.name}?`;
+    ? `Delete ${g.name}? ${uses} site setting${uses === 1 ? " uses" : "s use"} it. Those sites will be blocked until you pick something else.`
+    : `Delete ${g.name}? Its servers stay.`;
   if (!confirm(msg)) return;
   await change(async () => {
-    const { servers } = await fresh(["servers"]);
-    await store.save({ servers: servers.filter((x) => x.id !== s.id) });
+    const { groups } = await fresh(["groups"]);
+    await store.save({ groups: groups.filter((x) => x.id !== g.id) });
     await refresh();
   });
 }
@@ -400,7 +525,7 @@ function download(name, text, type) {
 $("export").addEventListener("click", () => {
   const withKeys = $("with-keys").checked;
   const servers = d.servers.map((s) => (withKeys ? s : { id: s.id, name: s.name, label: s.label, endpoint: s.endpoint }));
-  const backup = { wireroute: 1, servers, rules: d.rules, learned: d.learned, settings: d.settings };
+  const backup = { wireroute: 1, servers, groups: d.groups, rules: d.rules, learned: d.learned, settings: d.settings };
   download(`wireroute-backup${withKeys ? "-with-keys" : ""}.json`, JSON.stringify(backup, null, 2), "application/json");
 });
 $("import").addEventListener("click", () => $("import-file").click());
@@ -417,7 +542,13 @@ $("import-file").addEventListener("change", async (e) => {
       const saved = await fresh(["servers", "settings"]);
       const servers = [...saved.servers];
       for (const s of full) if (!servers.some((x) => x.id === s.id)) servers.push(s);
-      await store.save({ servers, rules: b.rules ?? [], learned: b.learned ?? {}, settings: { ...saved.settings, ...(b.settings ?? {}) } });
+      await store.save({
+        servers,
+        groups: b.groups ?? [],
+        rules: b.rules ?? [],
+        learned: b.learned ?? {},
+        settings: { ...saved.settings, ...(b.settings ?? {}) },
+      });
       await refresh();
     });
   } catch (err) {

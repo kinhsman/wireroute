@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,13 +21,19 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// Health timings. With a 25s keepalive WireGuard re-handshakes at least every
-// ~2 minutes, so a handshake older than staleAfter means the server is gone.
+// Health timings. Every healthEvery the helper knocks on the server through
+// the tunnel (a TCP connection to the tunnel's DNS server); probeFailsDown
+// missed knocks in a row mean it's down, so failover happens in ~10s. When a
+// tunnel can't be knocked on (its DNS server is outside AllowedIPs), the
+// WireGuard handshake age decides instead: with a 25s keepalive it
+// re-handshakes at least every ~2 minutes.
 const (
 	defaultKeepalive = 25
 	staleAfter       = 180 * time.Second
 	startGrace       = 20 * time.Second
 	healthEvery      = 5 * time.Second
+	probeTimeout     = 3 * time.Second
+	probeFailsDown   = 2
 	reresolveEvery   = 30 * time.Second
 )
 
@@ -47,6 +54,9 @@ type Tunnel struct {
 	rx, tx    int64
 	endpoint  string // resolved ip:port currently in use
 	lastResol time.Time
+	probeAddr string // "" when the tunnel can't be knocked on
+	fails     int    // missed knocks in a row
+	answered  bool   // the server has answered a knock since starting
 
 	stop chan struct{}
 	once sync.Once
@@ -111,6 +121,14 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		fmt.Fprintf(&b, "allowed_ip=%s\n", p)
 	}
 
+	probeAddr := ""
+	for _, d := range dns {
+		if containedIn(d, allowed) {
+			probeAddr = netip.AddrPortFrom(d, 53).String()
+			break
+		}
+	}
+
 	tunDev, tnet, err := netstack.CreateNetTUN(addrs, dns, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("create tunnel: %w", err)
@@ -139,6 +157,7 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		state:     "starting",
 		endpoint:  endpoint,
 		lastResol: time.Now(),
+		probeAddr: probeAddr,
 		stop:      make(chan struct{}),
 	}
 	go t.monitor()
@@ -149,6 +168,13 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 // tunnel's DNS server, so lookups never go out the normal connection.
 func (t *Tunnel) Dial(ctx context.Context, address string) (net.Conn, error) {
 	return t.tnet.DialContext(ctx, "tcp", address)
+}
+
+// State is starting, up, down or error.
+func (t *Tunnel) State() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.state
 }
 
 // Usable reports whether traffic should be sent into this tunnel.
@@ -192,17 +218,33 @@ func (t *Tunnel) monitor() {
 }
 
 func (t *Tunnel) checkHealth() {
+	alive, knocked := t.knock()
 	hs, rx, tx := t.readStats()
 	now := time.Now()
 
 	t.mu.Lock()
 	prev := t.state
 	t.lastHS, t.rx, t.tx = hs, rx, tx
+	if knocked {
+		if alive {
+			t.fails = 0
+			t.answered = true
+		} else {
+			t.fails++
+		}
+	}
+	fresh := hs > 0 && now.Sub(time.Unix(hs, 0)) < staleAfter
 	switch {
-	case hs > 0 && now.Sub(time.Unix(hs, 0)) < staleAfter:
+	case knocked && alive:
+		t.state = "up"
+	case knocked && t.fails >= probeFailsDown && (t.answered || now.Sub(t.started) >= startGrace):
+		t.state = "down"
+	case !knocked && fresh:
 		t.state = "up"
 	case now.Sub(t.started) < startGrace:
 		t.state = "starting"
+	case knocked:
+		// One missed knock: keep the last verdict until the next one.
 	default:
 		t.state = "down"
 	}
@@ -216,6 +258,38 @@ func (t *Tunnel) checkHealth() {
 	if state != prev && t.onState != nil {
 		t.onState(t.Status())
 	}
+}
+
+// knock opens and closes a TCP connection to the tunnel's DNS server. Any
+// answer, even "connection refused", proves the server is passing traffic;
+// only silence (a timeout) counts as a miss. knocked is false when the tunnel
+// has nothing to knock on.
+func (t *Tunnel) knock() (alive, knocked bool) {
+	if t.probeAddr == "" {
+		return false, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	c, err := t.tnet.DialContext(ctx, "tcp", t.probeAddr)
+	if err == nil {
+		c.Close()
+		return true, true
+	}
+	var nerr net.Error
+	if ctx.Err() != nil || (errors.As(err, &nerr) && nerr.Timeout()) {
+		return false, true
+	}
+	return true, true
+}
+
+// containedIn reports whether a falls inside any of the CIDR prefixes.
+func containedIn(a netip.Addr, prefixes []string) bool {
+	for _, s := range prefixes {
+		if p, err := netip.ParsePrefix(strings.TrimSpace(s)); err == nil && p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // reresolve handles home servers on dynamic DNS: when the server goes quiet,

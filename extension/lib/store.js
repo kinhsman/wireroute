@@ -3,6 +3,7 @@
 //
 //   servers  [{id, name, label, privateKey, addresses, dns, mtu, publicKey,
 //              presharedKey, endpoint, allowedIPs, keepalive}]
+//   groups   [{id, name, label, members: [serverId...]}]  failover order
 //   rules    [{id, pattern, exact, route, autoFollow}]
 //   learned  {host: ruleId}   hidden addresses sites were seen using
 //   settings {enabled, defaultRoute, killSwitch, blockWebRTC, lanDirect}
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS = {
 
 const DEFAULTS = {
   servers: [],
+  groups: [],
   rules: [],
   learned: {},
   settings: DEFAULT_SETTINGS,

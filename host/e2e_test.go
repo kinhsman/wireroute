@@ -5,12 +5,14 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -305,5 +307,99 @@ func TestTwoServersAtOnce(t *testing.T) {
 	h.m.mu.Unlock()
 	if aRunning {
 		t.Fatalf("server A should stop once nothing uses it")
+	}
+}
+
+func TestGroupFailover(t *testing.T) {
+	privA, pubA := genKey(t)
+	privB, pubB := genKey(t)
+	spA, portA, stopA := fakeServer(t, "A", pubA)
+	spB, portB, stopB := fakeServer(t, "B", pubB)
+	a := serverConf("A", privA, spA, portA)
+	bConf := serverConf("B", privB, spB, portB)
+	// Give both a DNS server inside the tunnel so the helper can knock.
+	a.DNS = []string{"10.9.0.1"}
+	bConf.DNS = []string{"10.9.0.1"}
+
+	h := newHarness(t, &Config{
+		Servers:      []ServerConf{a, bConf},
+		Groups:       []Group{{ID: "G", Name: "Group", Members: []string{"A", "B"}}},
+		Rules:        []Rule{{ID: "r1", Pattern: "10.9.0.1", Exact: true, Route: "G"}},
+		DefaultRoute: "direct",
+		KillSwitch:   true,
+		HoldMs:       100,
+	})
+	waitUp(t, h, "A")
+	waitUp(t, h, "B")
+	tunnel := func(id string) *Tunnel {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		return h.m.tunnels[id]
+	}
+	tunnel("A").checkHealth()
+	tunnel("B").checkHealth()
+
+	if _, body := h.connect(t, "10.9.0.1:80"); body != "via-tunnel A" {
+		t.Fatalf("first member: got %q", body)
+	}
+	if got := h.m.proxy.Pick("G"); got != "A" {
+		t.Fatalf("pick: got %q, want A", got)
+	}
+
+	// Keep a connection open through A, like a browser tab would.
+	open, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", h.port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Close()
+	fmt.Fprintf(open, "CONNECT 10.9.0.1:80 HTTP/1.1\r\nHost: 10.9.0.1:80\r\n\r\n")
+	br := bufio.NewReader(open)
+	if resp, err := http.ReadResponse(br, nil); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("open connection: %v %v", resp, err)
+	}
+
+	// A dies: after two missed knocks the group moves to B.
+	stopA()
+	tunnel("A").checkHealth()
+	tunnel("A").checkHealth()
+
+	// The connection through A must be cut, so the browser reconnects via B.
+	open.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := br.ReadByte(); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("connection through the dead server was left open (err=%v)", err)
+	}
+	if st := tunnel("A").State(); st != "down" {
+		t.Fatalf("A should be down after two missed knocks, is %s", st)
+	}
+	if _, body := h.connect(t, "10.9.0.1:80"); body != "via-tunnel B" {
+		t.Fatalf("after A died: got %q, want B", body)
+	}
+	recent := h.m.proxy.Recent()
+	if last := recent[len(recent)-1]; last.Route != "G" || last.Via != "B" {
+		t.Fatalf("decision should say group G via B, got %+v", last)
+	}
+
+	// Every member down: blocked, never direct.
+	stopB()
+	tunnel("B").checkHealth()
+	tunnel("B").checkHealth()
+	if code, _ := h.connect(t, "10.9.0.1:80"); code != http.StatusServiceUnavailable {
+		t.Fatalf("all members down: got %d, want 503", code)
+	}
+}
+
+func TestKnockSeesALiveServer(t *testing.T) {
+	priv, pub := genKey(t)
+	sp, port, stop := fakeServer(t, "A", pub)
+	defer stop()
+	c := serverConf("A", priv, sp, port)
+	c.DNS = []string{"10.9.0.1"}
+	h := newHarness(t, &Config{Servers: []ServerConf{c}, Rules: []Rule{{ID: "r", Pattern: "x.example", Route: "A"}}, DefaultRoute: "direct", KillSwitch: true})
+	waitUp(t, h, "A")
+	h.m.mu.Lock()
+	tun := h.m.tunnels["A"]
+	h.m.mu.Unlock()
+	if alive, knocked := tun.knock(); !knocked || !alive {
+		t.Fatalf("knock on a live server: alive=%v knocked=%v", alive, knocked)
 	}
 }

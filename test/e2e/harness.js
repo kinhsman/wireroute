@@ -77,6 +77,11 @@ process.on("exit", () => {
   if (tmpRoot && !process.env.KEEP) rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+const fakePids = {};
+
+/** Process ID of a fake server, to pause or stop it. */
+export const fakePid = (name) => fakePids[name];
+
 /** Install the helper and start fake servers. Returns {tmp, confs}. */
 export async function setup(serverNames = ["A", "B"]) {
   tmpRoot = mkdtempSync(join(tmpdir(), "wireroute-e2e-"));
@@ -85,12 +90,14 @@ export async function setup(serverNames = ["A", "B"]) {
   // the test installs the current helper the normal way first.
   execFileSync(join(ROOT, "install", "install.sh"), { stdio: "ignore" });
   execFileSync("go", ["build", "-o", join(tmpRoot, "fakevpn"), "./cmd/fakevpn"], { cwd: join(ROOT, "host"), stdio: "inherit" });
+  // One process per fake server, so a test can pause just one of them.
   const confs = {};
-  if (serverNames.length) {
-    const fake = spawn(join(tmpRoot, "fakevpn"), ["-dir", tmpRoot, ...serverNames], { stdio: ["ignore", "pipe", "inherit"] });
+  for (const n of serverNames) {
+    const fake = spawn(join(tmpRoot, "fakevpn"), ["-dir", tmpRoot, n], { stdio: ["ignore", "pipe", "inherit"] });
     procs.push(fake);
+    fakePids[n] = fake.pid;
     await new Promise((res) => fake.stdout.on("data", (b) => String(b).includes("ready") && res()));
-    for (const n of serverNames) confs[n] = parseConf(readFileSync(join(tmpRoot, `${n}.conf`), "utf8"));
+    confs[n] = parseConf(readFileSync(join(tmpRoot, `${n}.conf`), "utf8"));
   }
   return { tmp: tmpRoot, confs };
 }
@@ -258,7 +265,7 @@ export async function checkInvariants(b, ext, { t0, tabPrefix, allowBlocked = fa
     const badge = await b.evaluate(ext.sessionId, `chrome.action.getBadgeText({ tabId: ${tabId} })`);
     // The badge shows the server's short label (its country after a Check),
     // else the first letters of its name.
-    const srv = ((await storage("servers")) ?? []).find((x) => x.id === info.route);
+    const srv = [...((await storage("servers")) ?? []), ...((await storage("groups")) ?? [])].find((x) => x.id === info.route);
     const short = srv ? (srv.label || srv.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "VPN").slice(0, 4) : "";
     const wantBadge = info.route === "direct" ? "" : info.usable ? short : "!";
     if (badge !== wantBadge) problems.push(`badge "${badge}", expected "${wantBadge}"`);

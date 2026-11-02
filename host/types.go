@@ -2,7 +2,7 @@ package main
 
 // Version is reported to the extension on hello so the UI can show it and
 // warn when the extension and helper drift apart.
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // Route values. Anything else is a server ID.
 const (
@@ -33,9 +33,18 @@ type Rule struct {
 	Route   string `json:"route"`
 }
 
+// Group is a set of servers a site can use; connections take the first one
+// that's up, so if it dies the site moves to the next.
+type Group struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Members []string `json:"members"`
+}
+
 // Config is the whole routing picture. The extension sends it on every change.
 type Config struct {
 	Servers      []ServerConf      `json:"servers"`
+	Groups       []Group           `json:"groups"`
 	Rules        []Rule            `json:"rules"`
 	Learned      map[string]string `json:"learned"` // host -> rule ID
 	DefaultRoute string            `json:"defaultRoute"`
@@ -62,6 +71,7 @@ type Explained struct {
 	Route string `json:"route"`
 	Why   string `json:"why"`
 	Rule  string `json:"rule,omitempty"`
+	Via   string `json:"via,omitempty"` // server a group would use right now
 }
 
 // TunnelStatus is what the UI shows for one server.

@@ -76,10 +76,20 @@ func usedServers(c *Config) map[string]ServerConf {
 	for _, s := range c.Servers {
 		byID[s.ID] = s
 	}
+	groups := map[string][]string{}
+	for _, g := range c.Groups {
+		groups[g.ID] = g.Members
+	}
 	used := map[string]ServerConf{}
 	add := func(route string) {
 		if s, ok := byID[route]; ok {
 			used[route] = s
+		}
+		// Every member of a group stays connected, so failover is instant.
+		for _, id := range groups[route] {
+			if s, ok := byID[id]; ok {
+				used[id] = s
+			}
 		}
 	}
 	add(c.DefaultRoute)
@@ -136,6 +146,9 @@ func (m *manager) syncTunnels() {
 
 func (m *manager) start(s ServerConf) {
 	t, err := startTunnel(s, func(st TunnelStatus) {
+		if st.State == "down" {
+			m.proxy.DropServer(st.Server)
+		}
 		m.out.send(Outgoing{Type: "tunnel", Tunnel: &st})
 	})
 	m.mu.Lock()
@@ -172,10 +185,14 @@ func (m *manager) publishLocked() {
 		cp[k] = v
 	}
 	kill := true
+	groups := map[string][]string{}
 	if m.cfg != nil {
 		kill = m.cfg.KillSwitch
+		for _, g := range m.cfg.Groups {
+			groups[g.ID] = append([]string(nil), g.Members...)
+		}
 	}
-	m.proxy.SetTunnels(cp, kill)
+	m.proxy.SetTunnels(cp, groups, kill)
 }
 
 // retryLoop restarts servers that failed to start (no internet yet, server
@@ -255,7 +272,7 @@ func (m *manager) handle(msg *Incoming) {
 		out := make([]Explained, 0, len(msg.Hosts))
 		for _, h := range msg.Hosts {
 			route, why, rule := m.router.Explain(h)
-			out = append(out, Explained{Host: h, Route: route, Why: why, Rule: rule})
+			out = append(out, Explained{Host: h, Route: route, Why: why, Rule: rule, Via: m.proxy.Pick(route)})
 		}
 		reply(Outgoing{Type: "explain", Routes: out})
 

@@ -75,6 +75,19 @@
       <div id="server-ok" class="notice ok hidden"></div>
 
       <div id="server-list" class="list"></div>
+
+      <header class="head sub">
+        <div>
+          <h2>Groups</h2>
+          <p class="dim">A group is a list of servers. A site set to a group uses the first server that's up. If that server stops answering, the site moves to the next one within about 10 seconds.</p>
+        </div>
+      </header>
+      <form id="add-group" class="card add-row">
+        <input type="text" id="group-name" placeholder="New group, like Vietnam" autocomplete="off" />
+        <button class="btn btn-primary" type="submit">Create group</button>
+      </form>
+      <div id="group-error" class="notice bad hidden"></div>
+      <div id="group-list" class="list"></div>
     </section>
 
     <!-- Settings -->

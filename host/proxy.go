@@ -26,9 +26,11 @@ type Proxy struct {
 
 	mu         sync.Mutex
 	tunnels    map[string]*Tunnel
+	groups     map[string][]string // group ID -> server IDs, in failover order
 	killSwitch bool
 	conns      map[*tracked]struct{}
 	transports map[string]*http.Transport
+	byServer   map[string]map[*serverConn]struct{} // open connections per server
 
 	ln   net.Listener
 	port int
@@ -39,17 +41,18 @@ type Proxy struct {
 // Decision is one routing choice the proxy made.
 type Decision struct {
 	Host  string `json:"host"`
-	Route string `json:"route"` // direct, a server ID, or "blocked"
+	Route string `json:"route"`         // direct, a server or group ID, or "blocked"
+	Via   string `json:"via,omitempty"` // the server actually used, for groups
 	Why   string `json:"why"`
 	At    int64  `json:"at"` // unix milliseconds
 }
 
 const maxRecent = 500
 
-func (p *Proxy) record(host, route, why string) {
+func (p *Proxy) record(host, route, via, why string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.recent = append(p.recent, Decision{Host: normHost(host), Route: route, Why: why, At: time.Now().UnixMilli()})
+	p.recent = append(p.recent, Decision{Host: normHost(host), Route: route, Via: via, Why: why, At: time.Now().UnixMilli()})
 	if len(p.recent) > maxRecent {
 		p.recent = p.recent[len(p.recent)-maxRecent:]
 	}
@@ -76,6 +79,7 @@ func NewProxy(router *Router) *Proxy {
 		killSwitch: true,
 		conns:      map[*tracked]struct{}{},
 		transports: map[string]*http.Transport{},
+		byServer:   map[string]map[*serverConn]struct{}{},
 	}
 }
 
@@ -111,11 +115,40 @@ func (p *Proxy) Port() int {
 	return p.port
 }
 
-func (p *Proxy) SetTunnels(t map[string]*Tunnel, killSwitch bool) {
+func (p *Proxy) SetTunnels(t map[string]*Tunnel, groups map[string][]string, killSwitch bool) {
 	p.mu.Lock()
 	p.tunnels = t
+	p.groups = groups
 	p.killSwitch = killSwitch
 	p.mu.Unlock()
+}
+
+// Pick is the server a new connection on route would use right now: the
+// server itself, or for a group the first member that's up (else the first
+// still starting). "" means nothing usable.
+func (p *Proxy) Pick(route string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	id, _ := p.pickLocked(route)
+	return id
+}
+
+func (p *Proxy) pickLocked(route string) (string, *Tunnel) {
+	members, isGroup := p.groups[route]
+	if !isGroup {
+		if t := p.tunnels[route]; t != nil && t.Usable() {
+			return route, t
+		}
+		return "", nil
+	}
+	for _, want := range []string{"up", "starting"} {
+		for _, id := range members {
+			if t := p.tunnels[id]; t != nil && t.State() == want {
+				return id, t
+			}
+		}
+	}
+	return "", nil
 }
 
 // Recheck closes live connections whose route no longer matches, e.g. after a
@@ -143,25 +176,83 @@ func (p *Proxy) Recheck() {
 	}
 }
 
-func (p *Proxy) dial(ctx context.Context, route, addr string) (net.Conn, error) {
+// serverConn is a connection through one server's tunnel, tracked so all of
+// them can be cut when that server goes down.
+type serverConn struct {
+	net.Conn
+	p      *Proxy
+	server string
+	once   sync.Once
+}
+
+func (c *serverConn) Close() error {
+	c.once.Do(func() {
+		c.p.mu.Lock()
+		delete(c.p.byServer[c.server], c)
+		c.p.mu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+// DropServer cuts every open connection through a server that went down.
+// Chrome reconnects (it retries requests on reused connections), and the new
+// connections take the next server in the group, or get blocked.
+func (p *Proxy) DropServer(server string) {
+	p.mu.Lock()
+	var cs []*serverConn
+	for c := range p.byServer[server] {
+		cs = append(cs, c)
+	}
+	transports := make([]*http.Transport, 0, len(p.transports))
+	for _, t := range p.transports {
+		transports = append(transports, t)
+	}
+	p.mu.Unlock()
+	for _, c := range cs {
+		c.Close()
+	}
+	for _, t := range transports {
+		t.CloseIdleConnections()
+	}
+	if len(cs) > 0 {
+		logf("server %s down: cut %d connections", server, len(cs))
+	}
+}
+
+// dial connects to addr on route and says which server carried it ("" when
+// it went direct).
+func (p *Proxy) dial(ctx context.Context, route, addr string) (net.Conn, string, error) {
 	if route == RouteDirect {
 		d := net.Dialer{Timeout: 15 * time.Second}
-		return d.DialContext(ctx, "tcp", addr)
+		c, err := d.DialContext(ctx, "tcp", addr)
+		return c, "", err
 	}
 	p.mu.Lock()
-	t := p.tunnels[route]
+	via, t := p.pickLocked(route)
 	kill := p.killSwitch
 	p.mu.Unlock()
-	if t == nil || !t.Usable() {
+	if t == nil {
 		if kill {
-			return nil, errBlocked
+			return nil, "", errBlocked
 		}
 		d := net.Dialer{Timeout: 15 * time.Second}
-		return d.DialContext(ctx, "tcp", addr)
+		c, err := d.DialContext(ctx, "tcp", addr)
+		return c, "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	return t.Dial(ctx, addr)
+	c, err := t.Dial(ctx, addr)
+	if err != nil {
+		return nil, via, err
+	}
+	sc := &serverConn{Conn: c, p: p, server: via}
+	p.mu.Lock()
+	if p.byServer[via] == nil {
+		p.byServer[via] = map[*serverConn]struct{}{}
+	}
+	p.byServer[via][sc] = struct{}{}
+	p.mu.Unlock()
+	return sc, via, nil
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -179,11 +270,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route, why := p.router.DecideWhy(r.Context(), host)
-	remote, err := p.dial(r.Context(), route, r.Host)
+	remote, via, err := p.dial(r.Context(), route, r.Host)
 	if errors.Is(err, errBlocked) {
-		p.record(host, "blocked", why)
+		p.record(host, "blocked", "", why)
 	} else {
-		p.record(host, route, why)
+		p.record(host, route, via, why)
 	}
 	if err != nil {
 		code := http.StatusBadGateway
@@ -245,7 +336,7 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route, why := p.router.DecideWhy(r.Context(), r.URL.Hostname())
-	p.record(r.URL.Hostname(), route, why)
+	p.record(r.URL.Hostname(), route, p.Pick(route), why)
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
@@ -272,7 +363,8 @@ func (p *Proxy) transport(route string) *http.Transport {
 	t := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-			return p.dial(ctx, route, addr)
+			c, _, err := p.dial(ctx, route, addr)
+			return c, err
 		},
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     60 * time.Second,
