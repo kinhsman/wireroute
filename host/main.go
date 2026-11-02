@@ -309,15 +309,27 @@ func (m *manager) handle(msg *Incoming) {
 			return
 		}
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			// Your own address, looked up at the same time, to compare against.
+			directCh := make(chan string, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				defer cancel()
+				ip, _, _ := DirectCheck(ctx)
+				directCh <- ip
+			}()
+			// Two tries: one lost packet on a slow line shouldn't read as "Failed".
+			// Stays under the extension's 20s wait.
+			ctx, cancel := context.WithTimeout(context.Background(), 17*time.Second)
 			defer cancel()
 			ip, loc, err := t.ExitCheck(ctx)
+			if err != nil && ctx.Err() == nil {
+				ip, loc, err = t.ExitCheck(ctx)
+			}
 			if err != nil {
 				reply(Outgoing{Type: "error", Error: "check failed: " + err.Error()})
 				return
 			}
-			direct, _, _ := DirectCheck(ctx)
-			reply(Outgoing{Type: "check", IP: ip, Loc: loc, DirectIP: direct})
+			reply(Outgoing{Type: "check", IP: ip, Loc: loc, DirectIP: <-directCh})
 		}()
 
 	default:

@@ -39,12 +39,16 @@ const (
 // Tunnel is one userspace WireGuard connection to one server. It never touches
 // the Mac's network settings: traffic only enters it through Dial.
 type Tunnel struct {
-	conf    ServerConf
-	dev     *device.Device
-	tnet    *netstack.Net
-	peerHex string
-	started time.Time
-	onState func(TunnelStatus)
+	conf ServerConf
+	dev  *device.Device
+	tnet *netstack.Net
+	// For lookups and connects through the tunnel (resolve.go).
+	dnsServers   []netip.Addr
+	hasV4, hasV6 bool
+	dns          dnsCache
+	peerHex      string
+	started      time.Time
+	onState      func(TunnelStatus)
 
 	mu        sync.Mutex
 	state     string
@@ -161,6 +165,12 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		lastResol: time.Now(),
 		probeAddr: probeAddr,
 		stop:      make(chan struct{}),
+
+		dnsServers: dns,
+	}
+	for _, a := range addrs {
+		t.hasV4 = t.hasV4 || a.Is4()
+		t.hasV6 = t.hasV6 || a.Is6()
 	}
 	go t.monitor()
 	return t, nil
@@ -175,7 +185,7 @@ const readyWait = 8 * time.Second
 // tunnel's DNS server, so lookups never go out the normal connection.
 func (t *Tunnel) Dial(ctx context.Context, address string) (net.Conn, error) {
 	t.waitHandshake(ctx)
-	return t.tnet.DialContext(ctx, "tcp", address)
+	return t.dialTCP(ctx, address)
 }
 
 // waitHandshake returns once the tunnel has completed a handshake, or after
@@ -393,7 +403,7 @@ func DirectCheck(ctx context.Context) (ip, loc string, err error) {
 
 func cfTrace(ctx context.Context, dial func(context.Context, string) (net.Conn, error)) (ip, loc string, err error) {
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 8 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
 				return dial(ctx, addr)

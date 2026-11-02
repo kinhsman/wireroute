@@ -58,6 +58,15 @@ await step("the test server connects and comes out somewhere other than your own
   assert.ok(!c.sameAsYou);
 });
 
+await step("the Check button works every time, not just sometimes", async () => {
+  for (let i = 0; i < 5; i++) {
+    const t0 = Date.now();
+    const c = await b.ask(ext.sessionId, "check", { server: "srvL" });
+    assert.equal(c.ip, exitIP, `check ${i + 1} gave a different address`);
+    assert.ok(Date.now() - t0 < 5000, `check ${i + 1} took ${Date.now() - t0}ms`);
+  }
+});
+
 await step("ifconfig.io shows the server's address, not yours", async () => {
   const t0 = Date.now();
   const p = await b.openPage("https://ifconfig.io/");
