@@ -1,9 +1,10 @@
 // Shared plumbing for the end-to-end tests: installs the helper, runs fake
 // WireGuard servers, and drives a throwaway Chrome profile over the DevTools
-// protocol. Nothing here touches your normal Chrome profile or the Mac's network.
+// protocol. Nothing here touches your normal Chrome profile or the computer's
+// network. Runs on macOS and Windows.
 
 import { spawn, execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConf } from "../../extension/lib/conf.js";
@@ -11,7 +12,17 @@ import { isShared, matchRule } from "../../extension/lib/hosts.js";
 
 export const ROOT = resolve(import.meta.dirname, "../..");
 export const EXT_ID = "kbmajebcnniiphhhhhgafeipmpibcnjc";
-const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+export const WINDOWS = process.platform === "win32";
+const EXE = WINDOWS ? ".exe" : "";
+const CHROME =
+  process.env.CHROME ??
+  (WINDOWS
+    ? [
+        join(process.env.PROGRAMFILES ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+        join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+        join(process.env.LOCALAPPDATA ?? "", "Google", "Chrome", "Application", "chrome.exe"),
+      ].find((p) => existsSync(p))
+    : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -77,6 +88,38 @@ process.on("exit", () => {
   if (tmpRoot && !process.env.KEEP) rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+/** Install the current helper the way a person would on this system. */
+function installHelper() {
+  if (!WINDOWS) {
+    execFileSync(join(ROOT, "install", "install.sh"), { stdio: "ignore" });
+    return;
+  }
+  // Windows: build the exe next to a copy of the real installer and run it.
+  const dir = join(tmpRoot, "win-install");
+  mkdirSync(dir, { recursive: true });
+  const arch = process.arch === "arm64" ? "arm64" : "amd64";
+  execFileSync("go", ["build", "-o", join(dir, `wireroute-host-${arch}.exe`), "."], { cwd: join(ROOT, "host"), stdio: "inherit" });
+  copyFileSync(join(ROOT, "install", "install.ps1"), join(dir, "install.ps1"));
+  execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", join(dir, "install.ps1")], { stdio: "inherit" });
+}
+
+/** Process IDs of running helpers. On CI only the test's helper runs. */
+export function helperPids(parentPid) {
+  try {
+    if (WINDOWS) {
+      const out = execFileSync("powershell", [
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process -Filter \"Name='wireroute-host.exe'\" | ForEach-Object { $_.ProcessId }",
+      ]).toString();
+      return out.split(/\s+/).filter(Boolean).map(Number);
+    }
+    return execFileSync("pgrep", ["-P", String(parentPid), "-f", "wireroute-host"]).toString().trim().split("\n").filter(Boolean).map(Number);
+  } catch {
+    return [];
+  }
+}
+
 const fakePids = {};
 
 /** Process ID of a fake server, to pause or stop it. */
@@ -88,12 +131,12 @@ export async function setup(serverNames = ["A", "B"]) {
   console.log("installing helper and building fake servers");
   // Chrome on macOS only finds helpers registered in its standard folder, so
   // the test installs the current helper the normal way first.
-  execFileSync(join(ROOT, "install", "install.sh"), { stdio: "ignore" });
-  execFileSync("go", ["build", "-o", join(tmpRoot, "fakevpn"), "./cmd/fakevpn"], { cwd: join(ROOT, "host"), stdio: "inherit" });
+  installHelper();
+  execFileSync("go", ["build", "-o", join(tmpRoot, "fakevpn" + EXE), "./cmd/fakevpn"], { cwd: join(ROOT, "host"), stdio: "inherit" });
   // One process per fake server, so a test can pause just one of them.
   const confs = {};
   for (const n of serverNames) {
-    const fake = spawn(join(tmpRoot, "fakevpn"), ["-dir", tmpRoot, n], { stdio: ["ignore", "pipe", "inherit"] });
+    const fake = spawn(join(tmpRoot, "fakevpn" + EXE), ["-dir", tmpRoot, n], { stdio: ["ignore", "pipe", "inherit"] });
     procs.push(fake);
     fakePids[n] = fake.pid;
     await new Promise((res) => fake.stdout.on("data", (b) => String(b).includes("ready") && res()));
@@ -107,8 +150,9 @@ export class Browser {
   constructor(profile) {
     this.profile = profile;
     mkdirSync(join(profile, "NativeMessagingHosts"), { recursive: true });
-    // A Chrome with its own profile folder reads helper registrations from there.
-    copyFileSync(
+    // On a Mac, a Chrome with its own profile folder reads helper
+    // registrations from there. (Windows reads them from the registry.)
+    if (!WINDOWS) copyFileSync(
       join(homedir(), "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.wireroute.host.json"),
       join(profile, "NativeMessagingHosts", "com.wireroute.host.json")
     );

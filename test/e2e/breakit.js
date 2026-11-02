@@ -7,10 +7,9 @@
 // If the real text ever shows while example.com should use A, your real
 // connection leaked.
 
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { Browser, EXT_ID, ROOT, fakePid, finish, setup, sleep, step, until } from "./harness.js";
+import { Browser, EXT_ID, ROOT, WINDOWS, fakePid, finish, helperPids, setup, sleep, step, until } from "./harness.js";
 
 const { tmp, confs } = await setup(["A", "B"]);
 const b = new Browser(join(tmp, "profile"));
@@ -66,13 +65,7 @@ async function show(url, wait = 8000) {
   }
 }
 
-function testHelperPid() {
-  try {
-    return execFileSync("pgrep", ["-P", String(b.proc.pid), "-f", "wireroute-host"]).toString().trim().split("\n")[0];
-  } catch {
-    return "";
-  }
-}
+const testHelperPid = () => helperPids(b.proc.pid)[0] ?? 0;
 
 console.log("breaking things on purpose");
 
@@ -83,7 +76,7 @@ await step("baseline: example.com goes through A (and its name was looked up ins
 await step("helper crashes: example.com never loads the real site, then recovers by itself", async () => {
   const pid = testHelperPid();
   assert.ok(pid, "test helper found");
-  execFileSync("kill", ["-9", pid]);
+  process.kill(pid, "SIGKILL");
   for (const url of ["http://example.com/", "https://example.com/"]) {
     const during = await show(url, 4000);
     assert.ok(!during.startsWith("real"), `${url} loaded the real site while the helper was down: leak`);
@@ -208,6 +201,12 @@ await step("group failover: when A dies, example.com keeps working through B, an
 });
 
 await step("a server that simply goes quiet is noticed within about 10 seconds", async () => {
+  if (WINDOWS) {
+    // Windows can't pause a process; the failover step above and the helper
+    // tests cover a server that stops answering.
+    console.log("       skipped on Windows (no way to pause a process)");
+    return;
+  }
   // Stop answering without changing any settings: pause A's fake server.
   const before = (await state()).tunnels.srvA?.state;
   assert.equal(before, "up");
