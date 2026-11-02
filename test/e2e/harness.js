@@ -85,7 +85,13 @@ process.on("exit", () => {
       p.kill("SIGKILL");
     } catch {}
   }
-  if (tmpRoot && !process.env.KEEP) rmSync(tmpRoot, { recursive: true, force: true });
+  if (tmpRoot && !process.env.KEEP) {
+    try {
+      rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      // Windows keeps files locked for a moment after a process is killed.
+    }
+  }
 });
 
 /** Install the current helper the way a person would on this system. */

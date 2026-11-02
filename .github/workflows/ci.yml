@@ -66,10 +66,13 @@ jobs:
       - name: Features
         run: node test/e2e/run.js
       - name: Browsing like a person
+        if: success() || failure()
         run: node test/e2e/browse.js
       - name: Breaking things on purpose
+        if: success() || failure()
         run: node test/e2e/breakit.js
       - name: Every button
+        if: success() || failure()
         run: node test/e2e/buttons.js
       - name: Helper log
         if: failure()

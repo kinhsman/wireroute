@@ -164,10 +164,41 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 	return t, nil
 }
 
+// readyWait is how long a brand-new tunnel holds a connection while its first
+// WireGuard handshake completes, rather than letting the name lookup inside it
+// time out (seen on Windows right after a server comes back).
+const readyWait = 8 * time.Second
+
 // Dial opens a TCP connection through the tunnel. Names are looked up with the
 // tunnel's DNS server, so lookups never go out the normal connection.
 func (t *Tunnel) Dial(ctx context.Context, address string) (net.Conn, error) {
+	t.waitHandshake(ctx)
 	return t.tnet.DialContext(ctx, "tcp", address)
+}
+
+// waitHandshake returns once the tunnel has completed a handshake, or after
+// readyWait, whichever comes first.
+func (t *Tunnel) waitHandshake(ctx context.Context) {
+	deadline := time.Now().Add(readyWait)
+	for {
+		t.mu.Lock()
+		ready := t.lastHS > 0 || t.answered
+		t.mu.Unlock()
+		if ready || time.Now().After(deadline) {
+			return
+		}
+		if hs, _, _ := t.readStats(); hs > 0 {
+			t.mu.Lock()
+			t.lastHS = hs
+			t.mu.Unlock()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // State is starting, up, down or error.
@@ -255,8 +286,11 @@ func (t *Tunnel) checkHealth() {
 	if needResolve {
 		t.reresolve()
 	}
-	if state != prev && t.onState != nil {
-		t.onState(t.Status())
+	if state != prev {
+		logf("[%s] %s -> %s (handshake %ds ago, missed knocks %d)", t.conf.Name, prev, state, ageSecs(hs, now), t.fails)
+		if t.onState != nil {
+			t.onState(t.Status())
+		}
 	}
 }
 
@@ -280,6 +314,13 @@ func (t *Tunnel) knock() (alive, knocked bool) {
 		return false, true
 	}
 	return true, true
+}
+
+func ageSecs(hs int64, now time.Time) int64 {
+	if hs == 0 {
+		return -1
+	}
+	return int64(now.Sub(time.Unix(hs, 0)).Seconds())
 }
 
 // containedIn reports whether a falls inside any of the CIDR prefixes.
