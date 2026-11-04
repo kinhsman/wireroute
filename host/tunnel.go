@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sanglam/wireroute/host/wgstack"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 // Health timings. Every healthEvery the helper knocks on the server through
@@ -41,7 +41,7 @@ const (
 type Tunnel struct {
 	conf ServerConf
 	dev  *device.Device
-	tnet *netstack.Net
+	tnet *wgstack.Net
 	// For lookups and connects through the tunnel (resolve.go).
 	dnsServers   []netip.Addr
 	hasV4, hasV6 bool
@@ -132,7 +132,7 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		}
 	}
 
-	tunDev, tnet, err := netstack.CreateNetTUN(addrs, dns, mtu)
+	tunDev, tnet, err := wgstack.CreateNetTUN(addrs, dns, mtu)
 	if err != nil {
 		return nil, fmt.Errorf("create tunnel: %w", err)
 	}
