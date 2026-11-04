@@ -2,7 +2,7 @@ package main
 
 // Version is reported to the extension on hello so the UI can show it and
 // warn when the extension and helper drift apart.
-const Version = "1.2.3"
+const Version = "1.3.0"
 
 // Route values. Anything else is a server ID.
 const (
@@ -82,6 +82,7 @@ type TunnelStatus struct {
 	LastHandshake int64  `json:"lastHandshake,omitempty"` // unix seconds
 	RxBytes       int64  `json:"rxBytes"`
 	TxBytes       int64  `json:"txBytes"`
+	Relay         bool   `json:"relay,omitempty"` // connections go through the server's relay
 }
 
 // Outgoing is any message to the extension. ID echoes the request it answers;

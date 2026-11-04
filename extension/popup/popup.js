@@ -24,7 +24,8 @@ function el(tag, props = {}, ...children) {
 export function stateText(st) {
   switch (st?.state) {
     case "up":
-      return { text: "Connected", cls: "ok" };
+      // The server's relay is fetching sites for us (custom wg-easy image).
+      return { text: st.relay ? "Connected, relay on" : "Connected", cls: "ok" };
     case "starting":
       return { text: "Connecting", cls: "warn" };
     case "down":

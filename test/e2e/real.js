@@ -58,6 +58,10 @@ await step("the test server connects and comes out somewhere other than your own
   assert.ok(!c.sameAsYou);
 });
 
+await step("the server's relay is found (custom wg-easy image) and carries the traffic", async () => {
+  await until(async () => (await b.ask(ext.sessionId, "state")).tunnels.srvL?.relay === true, "relay found", 15000);
+});
+
 await step("the Check button works every time, not just sometimes", async () => {
   for (let i = 0; i < 5; i++) {
     const t0 = Date.now();

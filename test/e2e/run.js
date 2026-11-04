@@ -60,6 +60,12 @@ await step("both servers connect", async () => {
   }, "both tunnels up", 20000);
 });
 
+await step("A's relay is found by itself; B has none and goes straight through", async () => {
+  await until(async () => (await ask(ext.sessionId, "state")).tunnels.srvA?.relay === true, "A's relay found", 15000);
+  const s = await ask(ext.sessionId, "state");
+  assert.ok(!s.tunnels.srvB?.relay, "B claims a relay it doesn't have");
+});
+
 async function visit(url, { timeout = 15000 } = {}) {
   const page = await openPage(url);
   let lastSeen = "";

@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,6 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sanglam/wireroute/host/relay"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.zx2c4.com/wireguard/conn"
@@ -51,13 +53,14 @@ func key() (priv, pub []byte) {
 
 func main() {
 	dir := flag.String("dir", ".", "where to write client .conf files")
+	withRelay := flag.Bool("relay", false, "also run a WireRoute relay, like the custom wg-easy image")
 	flag.Parse()
 	names := flag.Args()
 	if len(names) == 0 {
 		names = []string{"A"}
 	}
 	for _, name := range names {
-		run(name, *dir)
+		run(name, *dir, *withRelay)
 	}
 	fmt.Println("ready")
 	ch := make(chan os.Signal, 1)
@@ -65,7 +68,7 @@ func main() {
 	<-ch
 }
 
-func run(name, dir string) {
+func run(name, dir string, withRelay bool) {
 	sPriv, sPub := key()
 	cPriv, cPub := key()
 
@@ -103,6 +106,22 @@ func run(name, dir string) {
 	}
 	go http.Serve(ln, handler(name))
 
+	if withRelay {
+		// Like the real relay, but every name is this server, as with DNS.
+		rl, err := tnet.ListenTCPAddrPort(netip.AddrPortFrom(serverIP, relay.Port))
+		if err != nil {
+			log.Fatal(err)
+		}
+		rs := &relay.Server{DialFunc: func(ctx context.Context, address string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			return tnet.DialContext(ctx, "tcp", net.JoinHostPort(serverIP.String(), port))
+		}}
+		go rs.Serve(rl)
+	}
+
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = 10.9.0.2/32
@@ -117,7 +136,7 @@ AllowedIPs = 0.0.0.0/0
 	if err := os.WriteFile(path, []byte(conf), 0o600); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("server %s on 127.0.0.1:%d, client config %s\n", name, port, path)
+	fmt.Printf("server %s on 127.0.0.1:%d, relay %v, client config %s\n", name, port, withRelay, path)
 }
 
 // handler: /whoami answers the server name; a page whose host starts with

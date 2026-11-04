@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sanglam/wireroute/host/relay"
 	"github.com/sanglam/wireroute/host/wgstack"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -60,6 +61,15 @@ type Tunnel struct {
 	probeAddr string // "" when the tunnel can't be knocked on
 	fails     int    // missed knocks in a row
 	answered  bool   // the server has answered a knock since starting
+
+	// The server's relay, when it has one (relayclient.go).
+	relayAddrs   []string
+	relay        *relay.Session
+	relayNext    time.Time
+	relayLooking bool
+	relayLogged  string
+	relaySeen    bool // this server has had a relay
+	relayMisses  int  // looked for it since and not found
 
 	stop chan struct{}
 	once sync.Once
@@ -167,6 +177,7 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		stop:      make(chan struct{}),
 
 		dnsServers: dns,
+		relayAddrs: relayCandidates(addrs),
 	}
 	for _, a := range addrs {
 		t.hasV4 = t.hasV4 || a.Is4()
@@ -185,7 +196,7 @@ const readyWait = 8 * time.Second
 // tunnel's DNS server, so lookups never go out the normal connection.
 func (t *Tunnel) Dial(ctx context.Context, address string) (net.Conn, error) {
 	t.waitHandshake(ctx)
-	return t.dialTCP(ctx, address)
+	return t.dialVia(ctx, address)
 }
 
 // waitHandshake returns once the tunnel has completed a handshake, or after
@@ -235,6 +246,7 @@ func (t *Tunnel) Status() TunnelStatus {
 		State:         t.state,
 		Error:         t.errMsg,
 		LastHandshake: t.lastHS,
+		Relay:         t.relay != nil && !t.relay.Closed(),
 		RxBytes:       t.rx,
 		TxBytes:       t.tx,
 	}
@@ -243,6 +255,7 @@ func (t *Tunnel) Status() TunnelStatus {
 func (t *Tunnel) Close() {
 	t.once.Do(func() {
 		close(t.stop)
+		t.closeRelay()
 		t.dev.Close()
 	})
 }
@@ -297,6 +310,12 @@ func (t *Tunnel) checkHealth() {
 
 	if needResolve {
 		t.reresolve()
+	}
+	switch state {
+	case "up":
+		t.relaySession() // find or reconnect the relay in the background
+	case "down":
+		t.closeRelay() // its connections are dead; don't wait out timeouts
 	}
 	if state != prev {
 		logf("[%s] %s -> %s (handshake %ds ago, missed knocks %d)", t.conf.Name, prev, state, ageSecs(hs, now), t.fails)

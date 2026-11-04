@@ -142,7 +142,10 @@ export async function setup(serverNames = ["A", "B"]) {
   // One process per fake server, so a test can pause just one of them.
   const confs = {};
   for (const n of serverNames) {
-    const fake = spawn(join(tmpRoot, "fakevpn" + EXE), ["-dir", tmpRoot, n], { stdio: ["ignore", "pipe", "inherit"] });
+    // Every server but B runs a relay (like the custom wg-easy image), so the
+    // suites cover connections both through a relay and straight through.
+    const args = ["-dir", tmpRoot, ...(n === "B" ? [] : ["-relay"]), n];
+    const fake = spawn(join(tmpRoot, "fakevpn" + EXE), args, { stdio: ["ignore", "pipe", "inherit"] });
     procs.push(fake);
     fakePids[n] = fake.pid;
     await new Promise((res) => fake.stdout.on("data", (b) => String(b).includes("ready") && res()));
