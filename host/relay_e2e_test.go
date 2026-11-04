@@ -20,9 +20,10 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// relayServer is a fake WireGuard server at 10.9.0.1 whose web page says
-// "via-tunnel", plus a relay that can be switched on and off. Whatever the
-// relay is asked to reach, it answers "via-relay".
+// relayServer is a fake WireGuard server at 10.9.0.1 with a web page at a
+// public-looking address (203.0.113.7, the relay only takes public ones)
+// that says "via-tunnel", plus a relay that can be switched on and off.
+// Whatever the relay is asked to reach, it answers "via-relay".
 type relayServer struct {
 	t     *testing.T
 	tnet  *netstack.Net
@@ -35,7 +36,7 @@ type relayServer struct {
 func newRelayServer(t *testing.T, clientPub []byte) (*relayServer, []byte, int) {
 	priv, pub := genKey(t)
 	port := freeUDPPort(t)
-	tunDev, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.9.0.1")}, nil, 1420)
+	tunDev, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.9.0.1"), netip.MustParseAddr(siteIP)}, nil, 1420)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,13 +50,17 @@ func newRelayServer(t *testing.T, clientPub []byte) (*relayServer, []byte, int) 
 		t.Fatal(err)
 	}
 	t.Cleanup(dev.Close)
-	web, err := tnet.ListenTCP(&net.TCPAddr{IP: net.ParseIP("10.9.0.1"), Port: 80})
+	web, err := tnet.ListenTCP(&net.TCPAddr{IP: net.ParseIP(siteIP), Port: 80})
 	if err != nil {
 		t.Fatal(err)
 	}
-	go (&http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "via-tunnel")
-	})}).Serve(web)
+	page := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "via-tunnel") })
+	go (&http.Server{Handler: page}).Serve(web)
+	web2, err := tnet.ListenTCP(&net.TCPAddr{IP: net.ParseIP("10.9.0.1"), Port: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go (&http.Server{Handler: page}).Serve(web2)
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "via-relay")
 	}))
@@ -122,7 +127,7 @@ func relayTunnel(t *testing.T, withRelay bool) (*Tunnel, *relayServer) {
 		DNS:        []string{"10.9.0.1"}, // gives the health knock something to hit
 		PublicKey:  base64.StdEncoding.EncodeToString(serverPub),
 		Endpoint:   fmt.Sprintf("127.0.0.1:%d", port),
-		AllowedIPs: []string{"10.9.0.0/24"},
+		AllowedIPs: []string{"10.9.0.0/24", siteIP + "/32"},
 	}
 	tun, err := startTunnel(c, func(TunnelStatus) {})
 	if err != nil {
@@ -132,11 +137,13 @@ func relayTunnel(t *testing.T, withRelay bool) (*Tunnel, *relayServer) {
 	return tun, rs
 }
 
-func fetch(t *testing.T, tun *Tunnel) string {
+func fetch(t *testing.T, tun *Tunnel) string { return fetchFrom(t, tun, siteIP+":80") }
+
+func fetchFrom(t *testing.T, tun *Tunnel, target string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := tun.Dial(ctx, "10.9.0.1:80")
+	c, err := tun.Dial(ctx, target)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -152,6 +159,18 @@ func fetch(t *testing.T, tun *Tunnel) string {
 	default:
 		t.Fatalf("unexpected answer %q", s)
 		return ""
+	}
+}
+
+const siteIP = "203.0.113.7"
+
+func TestPrivateAddressesSkipTheRelay(t *testing.T) {
+	tun, _ := relayTunnel(t, true)
+	waitRelay(t, tun, true, 10*time.Second)
+	// The server's own network goes straight through the tunnel; the relay
+	// only reaches websites.
+	if got := fetchFrom(t, tun, "10.9.0.1:80"); got != "tunnel" {
+		t.Fatalf("private address went %s, want tunnel", got)
 	}
 }
 

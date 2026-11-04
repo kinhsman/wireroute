@@ -141,14 +141,31 @@ func (t *Tunnel) closeRelay() {
 // dialVia connects through the relay when there is one, else straight
 // through the tunnel.
 func (t *Tunnel) dialVia(ctx context.Context, address string) (net.Conn, error) {
-	if s := t.relaySession(); s != nil {
+	if s := t.relaySession(); s != nil && !privateTarget(address) {
 		c, err := s.Dial(ctx, address)
-		if err == nil || !errors.Is(err, relay.ErrRelay) {
-			return c, err
+		switch {
+		case err == nil:
+			return c, nil
+		case errors.Is(err, relay.ErrRelay):
+			t.dropRelay(s, err)
+		case err.Error() == relay.ErrNotAllowed:
+			// A name that turned out to be private (the server's own
+			// network): the relay won't, the tunnel may.
+		default:
+			return nil, err
 		}
-		t.dropRelay(s, err)
 	}
 	return t.dialTCP(ctx, address)
+}
+
+// privateTarget: an address the relay refuses (it only reaches websites).
+func privateTarget(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && !relay.Public(ip)
 }
 
 // UsingRelay reports whether connections currently go through a relay.

@@ -164,6 +164,27 @@ func TestSiteErrorsAreNotRelayErrors(t *testing.T) {
 	}
 }
 
+func TestRelayOnlyReachesPublicAddresses(t *testing.T) {
+	addr, stop := startRelay(t, "", nil)
+	defer stop()
+	s, err := connect(t, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, target := range []string{"192.168.7.15:53", "10.1.30.1:80", "172.17.0.1:80", "100.69.197.139:443", "169.254.169.254:80", "[fd00::1]:80", "[fe80::1]:80"} {
+		_, err := dial(s, target)
+		if err == nil || errors.Is(err, ErrRelay) || !strings.Contains(err.Error(), "not allowed") {
+			t.Errorf("%s: got %v, want not allowed", target, err)
+		}
+	}
+	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "2606:4700::1111"} {
+		if !Public(netip.MustParseAddr(ip)) {
+			t.Errorf("%s should count as public", ip)
+		}
+	}
+}
+
 func TestRelayNeverConnectsToItsOwnMachine(t *testing.T) {
 	addr, stop := startRelay(t, "", nil) // the real, safe dialer
 	defer stop()

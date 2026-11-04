@@ -195,16 +195,12 @@ func (s *Server) dial(st *yamux.Stream, target string) {
 }
 
 // dialSafe is the normal dial: Go's dialer (IPv4 and IPv6 tried side by
-// side), never to the relay's own machine.
+// side), to public internet addresses only.
 func (s *Server) dialSafe(ctx context.Context, address string) (net.Conn, error) {
 	d := s.Dialer
 	d.ControlContext = func(_ context.Context, _, address string, _ syscall.RawConn) error {
-		// Never the relay's own machine: VPN users can reach other things
-		// already, but loopback services are the server's private business.
-		if ap, err := netip.ParseAddrPort(address); err == nil {
-			if ip := ap.Addr().Unmap(); ip.IsLoopback() || ip.IsUnspecified() {
-				return errNotAllowed
-			}
+		if ap, err := netip.ParseAddrPort(address); err == nil && !Public(ap.Addr()) {
+			return errNotAllowed
 		}
 		return nil
 	}
@@ -212,6 +208,22 @@ func (s *Server) dialSafe(ctx context.Context, address string) (net.Conn, error)
 }
 
 var errNotAllowed = errors.New("not allowed")
+
+// ErrNotAllowed is the text of the relay's answer for a private address.
+const ErrNotAllowed = "not allowed"
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// Public reports whether ip is an ordinary internet address. The relay is
+// for websites: it never reaches the server itself, its home network, VPN
+// or Tailscale addresses, or link-local and multicast ones. (Those stay
+// reachable straight through the tunnel, as before, where the tunnel allows.)
+func Public(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return ip.IsValid() && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast() &&
+		!ip.IsInterfaceLocalMulticast() && !cgnat.Contains(ip)
+}
 
 // pipe copies both ways, passing on a half-close, until both sides finish.
 func pipe(a, b net.Conn) {
