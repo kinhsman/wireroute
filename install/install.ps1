@@ -55,5 +55,8 @@ foreach ($b in $Browsers) {
 
 Write-Host ""
 Write-Host "Done. Helper installed in $AppDir"
-Write-Host "Next: in Chrome open chrome://extensions, turn on Developer mode,"
-Write-Host "click 'Load unpacked' and pick the 'extension' folder from this zip."
+# Only the zip has the extension next to this script (not the one-line install).
+if (Test-Path (Join-Path $PSScriptRoot "extension")) {
+  Write-Host "Next: in Chrome open chrome://extensions, turn on Developer mode,"
+  Write-Host "click 'Load unpacked' and pick the 'extension' folder from this zip."
+}

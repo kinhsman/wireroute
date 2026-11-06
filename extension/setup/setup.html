@@ -7,20 +7,39 @@
   <link rel="stylesheet" href="../lib/ui.css" />
   <style>
     body { padding: 40px 16px; }
-    .box { max-width: 560px; margin: 0 auto; padding: 28px; }
+    .box { max-width: 620px; margin: 0 auto; padding: 28px; }
     h1 { font-size: 22px; margin-bottom: 8px; }
-    ol { padding-left: 20px; }
-    li { margin: 8px 0; }
-    pre { background: var(--card-2); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+    .steps { display: flex; flex-direction: column; gap: 18px; margin: 20px 0; }
+    .cmd { display: flex; gap: 8px; align-items: stretch; margin-top: 8px; }
+    .cmd code {
+      flex: 1; min-width: 0; background: var(--card-2); padding: 10px 12px; border-radius: 8px;
+      font-size: 13px; white-space: pre-wrap; word-break: break-all; user-select: all;
+    }
+    .cmd .btn { flex: none; }
   </style>
 </head>
 <body>
   <div class="card box">
     <h1>Install the WireRoute helper</h1>
-    <p class="dim">The helper is a small program on your Mac that runs the WireGuard connections. Chrome starts and stops it for you. It doesn't need your admin password.</p>
-    <p><b>Mac:</b> open Terminal in the WireRoute folder and run:</p>
-    <pre>./install/install.sh</pre>
-    <p><b>Windows:</b> double-click <b>Install WireRoute.cmd</b> in the WireRoute folder.</p>
+    <p class="dim">The helper is a small program that runs the WireGuard connections. Chrome starts and stops it for you. No admin password needed.</p>
+
+    <div class="steps" id="steps">
+      <div id="win">
+        <b>Windows:</b> open <b>PowerShell</b> (Start menu, type PowerShell), paste this and press Enter:
+        <div class="cmd">
+          <code>irm https://raw.githubusercontent.com/kinhsman/wireroute/main/install/get.ps1 | iex</code>
+          <button class="btn" data-copy>Copy</button>
+        </div>
+      </div>
+      <div id="mac">
+        <b>Mac:</b> open <b>Terminal</b>, paste this and press Enter:
+        <div class="cmd">
+          <code>curl -fsSL https://raw.githubusercontent.com/kinhsman/wireroute/main/install/get.sh | bash</code>
+          <button class="btn" data-copy>Copy</button>
+        </div>
+      </div>
+    </div>
+
     <p>Then come back here and press the button.</p>
     <button class="btn btn-primary" id="check">Check again</button>
     <p id="result" class="dim"></p>

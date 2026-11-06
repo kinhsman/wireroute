@@ -31,14 +31,24 @@ local proxy in the helper (127.0.0.1, password protected)
 
 ## Install
 
-1. Build and register the helper:
+1. Install the helper with one line. No admin rights, no Go.
 
-   ```bash
-   ./install/install.sh
+   Windows (PowerShell):
+
+   ```powershell
+   irm https://raw.githubusercontent.com/kinhsman/wireroute/main/install/get.ps1 | iex
    ```
 
-   If the Mac doesn't have Go, the script downloads the official one into
-   `~/Library/Caches/WireRoute` (one time, about 70 MB, checksum verified).
+   Mac (Terminal):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/kinhsman/wireroute/main/install/get.sh | bash
+   ```
+
+   These download the latest helper from GitHub Releases. To build it from
+   source on a Mac instead, run `./install/install.sh`; if the Mac doesn't
+   have Go, it downloads the official one into `~/Library/Caches/WireRoute`
+   (one time, about 70 MB, checksum verified).
 
 2. In Chrome open `chrome://extensions`, switch on Developer mode (top right),
    click Load unpacked and pick the `extension` folder.
@@ -47,7 +57,13 @@ local proxy in the helper (127.0.0.1, password protected)
 
 Uninstall the helper with `./install/install.sh --remove` (also deletes that Go).
 
-### Windows
+### Releasing a new helper
+
+Bump the version in `extension/manifest.json` and `host/types.go`, commit,
+then run `./tools/release.sh`. It builds the helper for Windows and Mac and
+publishes GitHub release `v<version>`, which the one-line installs pick up.
+
+### Windows zip
 
 `./tools/package-windows.sh` (on a Mac or Linux box with Go) builds
 `dist/WireRoute-windows-<version>.zip`: the extension, the helper for x64 and

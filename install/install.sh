@@ -6,6 +6,9 @@
 #
 #   ./install/install.sh            build + install
 #   ./install/install.sh --remove   uninstall the helper
+#
+# With WIREROUTE_BIN=<path> it installs that ready-made helper instead of
+# building one (install/get.sh, the one-line install, does this).
 
 set -euo pipefail
 
@@ -36,10 +39,9 @@ fi
 # Go builds the helper. Use the Mac's own Go when it's new enough; otherwise
 # download the official one into WireRoute's cache folder (no Homebrew, no
 # admin rights) and use that.
-NEED_GO=$(awk '$1 == "go" { print $2; exit }' "$ROOT/host/go.mod")
-
 go_new_enough() {  # $1 = path to a go binary
-  local have
+  local have NEED_GO
+  NEED_GO=$(awk '$1 == "go" { print $2; exit }' "$ROOT/host/go.mod")
   have=$("$1" env GOVERSION 2>/dev/null) || return 1
   awk -v a="${have#go}" -v b="$NEED_GO" 'BEGIN {
     split(a, x, "."); split(b, y, ".")
@@ -69,19 +71,31 @@ fetch_go() {
   rm -f "$GO_CACHE/$file"
 }
 
-if command -v go >/dev/null && go_new_enough go; then
-  GO=go
-else
-  GO="$GO_CACHE/go/bin/go"
-  go_new_enough "$GO" || fetch_go
-  # Keep everything this Go downloads in the cache folder too, not in ~/go.
-  export GOTOOLCHAIN=local GOPATH="$GO_CACHE/gopath" GOCACHE="$GO_CACHE/build" GOFLAGS=-modcacherw
-fi
+build_helper() {
+  local GO
+  if command -v go >/dev/null && go_new_enough go; then
+    GO=go
+  else
+    GO="$GO_CACHE/go/bin/go"
+    go_new_enough "$GO" || fetch_go
+    # Keep everything this Go downloads in the cache folder too, not in ~/go.
+    export GOTOOLCHAIN=local GOPATH="$GO_CACHE/gopath" GOCACHE="$GO_CACHE/build" GOFLAGS=-modcacherw
+  fi
+  echo "Building the helper..."
+  (cd "$ROOT/host" && "$GO" build -trimpath -ldflags="-s -w" -o "$BIN.new" .)
+}
 
-echo "Building the helper..."
 mkdir -p "$APP_DIR"
 chmod 700 "$APP_DIR"
-(cd "$ROOT/host" && "$GO" build -trimpath -ldflags="-s -w" -o "$BIN.new" .)
+if [[ -n "${WIREROUTE_BIN:-}" ]]; then
+  # A ready-made helper (the one-line install, install/get.sh): no Go needed.
+  echo "Installing the helper..."
+  cp "$WIREROUTE_BIN" "$BIN.new"
+  chmod 755 "$BIN.new"
+  xattr -d com.apple.quarantine "$BIN.new" 2>/dev/null || true
+else
+  build_helper
+fi
 mv -f "$BIN.new" "$BIN"
 
 MANIFEST=$(cat <<EOF
