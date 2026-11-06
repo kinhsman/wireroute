@@ -31,18 +31,21 @@ local proxy in the helper (127.0.0.1, password protected)
 
 ## Install
 
-1. Build and register the helper (needs Go: `brew install go`):
+1. Build and register the helper:
 
    ```bash
    ./install/install.sh
    ```
+
+   If the Mac doesn't have Go, the script downloads the official one into
+   `~/Library/Caches/WireRoute` (one time, about 70 MB, checksum verified).
 
 2. In Chrome open `chrome://extensions`, switch on Developer mode (top right),
    click Load unpacked and pick the `extension` folder.
 3. Drop your WireGuard `.conf` files on the Servers page that opens.
 4. On any site, click the WireRoute icon and pick a server.
 
-Uninstall the helper with `./install/install.sh --remove`.
+Uninstall the helper with `./install/install.sh --remove` (also deletes that Go).
 
 ### Windows
 
