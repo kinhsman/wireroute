@@ -90,9 +90,18 @@ function render() {
   const hs = $("helper-state");
   hs.replaceChildren(
     el("span", { class: "dot " + (h.connected ? "ok" : "bad") }),
-    h.connected ? `Helper running (v${h.version})` : h.missing ? "Helper not installed" : "Helper not running"
+    el(
+      "div",
+      {},
+      h.connected ? `Helper running (v${h.version})` : h.missing ? "Helper not installed" : "Helper not running",
+      h.missing && !h.connected
+        ? el("button", { class: "link", id: "install-helper", onclick: () => chrome.tabs.create({ url: chrome.runtime.getURL("setup/setup.html") }) }, "Install helper")
+        : null
+    )
   );
-  $("about").textContent = `WireRoute ${chrome.runtime.getManifest().version}. Helper log: ~/Library/Logs/WireRoute/helper.log`;
+  const version = chrome.runtime.getManifest().version;
+  $("version").textContent = `v${version}`;
+  $("about").textContent = `WireRoute ${version}. Helper log: ~/Library/Logs/WireRoute/helper.log`;
 
   renderSites();
   renderServers();

@@ -24,7 +24,9 @@ body { display: flex; min-height: 100vh; }
 }
 .nav a:hover { background: var(--card-2); color: var(--text); }
 .nav a.active { background: var(--card-2); color: var(--text); }
+.brand .version { font-size: 12px; font-weight: 600; color: var(--faint); }
 .helper-state { margin-top: auto; font-size: 12px; padding: 8px; display: flex; gap: 8px; align-items: center; color: var(--dim); }
+.helper-state .link { display: block; font-size: 12px; margin-top: 2px; }
 
 main { flex: 1; padding: 28px 32px 60px; max-width: 900px; }
 .tab { display: grid; gap: 12px; }
