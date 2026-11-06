@@ -94,7 +94,7 @@ function render() {
       "div",
       {},
       h.connected ? `Helper running (v${h.version})` : h.missing ? "Helper not installed" : "Helper not running",
-      h.missing && !h.connected
+      !h.connected
         ? el("button", { class: "link", id: "install-helper", onclick: () => chrome.tabs.create({ url: chrome.runtime.getURL("setup/setup.html") }) }, "Install helper")
         : null
     )
