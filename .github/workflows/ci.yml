@@ -1,13 +1,12 @@
-# Tests WireRoute on every push. macOS runs locally (npm run e2e); CI covers
+# Tests WireRoute when started by hand. macOS runs locally (npm run e2e); CI covers
 # Linux and Windows, where Windows runs the real installer and all Chrome
 # suites against fake WireGuard servers.
 
 name: CI
 
+# Manual only: tests run locally. Start it from the Actions tab or with
+# `gh workflow run CI`.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
