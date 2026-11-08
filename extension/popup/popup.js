@@ -1,7 +1,7 @@
 // popup.js: pick a server for the site you're on.
 
 import * as store from "../lib/store.js";
-import { flag } from "../lib/conf.js";
+import { flag, groupIcon } from "../lib/conf.js";
 import { normHost } from "../lib/hosts.js";
 
 const $ = (id) => document.getElementById(id);
@@ -151,7 +151,7 @@ function renderSite() {
     ...data.groups.map((g) => {
       const st = groupState(g, info.route === g.id ? info.via : "");
       const lead = checks[info.route === g.id && info.via ? info.via : g.members[0]]?.loc;
-      return { value: g.id, icon: lead ? flag(lead) : "🔁", name: g.name, sub: st.text, cls: st.cls };
+      return { value: g.id, icon: groupIcon(g, lead), name: g.name, sub: st.text, cls: st.cls };
     }),
     ...servers.map((s) => {
       const st = stateText(state.tunnels[s.id]);

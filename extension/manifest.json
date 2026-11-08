@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "WireRoute",
   "short_name": "WireRoute",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Send each website through the WireGuard server you pick. Hidden addresses a site uses follow it automatically.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkaPlg+RLWgVLeDqy+XF/9gfVQWSTY1yxy2k6KXUp1hoEp6AFAaLsH2FZE3uLXiwu8WhQS0ULyhgvmzWCdpkpSYMC8PEp+wIRHF2MMyxAq3/5okZfvhmqS6Td1r8OQ1DyVKiOeA+YrUCIWmWHKOMsJrVbjrATsJY7W2tGT9e+S9HG7CCrIrTJcxTuBr5Vv0YQQyQwpvPeSSgMaAhSSkOqm+BsOlCtPchMWKHsLv64umw0ExK/DPQ4HxhE0JW/9qTBdz33nYqONJWp6adaGF1oyjXUbrKazfEs8sM+iI0hhPtdZ7sPCaX+vnp+1K9U4vB8E70L2Jx35t3Jq/FhiBw0hwIDAQAB",
   "minimum_chrome_version": "120",

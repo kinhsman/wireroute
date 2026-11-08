@@ -105,3 +105,20 @@ export function flag(cc) {
   if (!/^[A-Za-z]{2}$/.test(cc ?? "")) return "🌐";
   return String.fromCodePoint(...[...cc.toUpperCase()].map((c) => 0x1f1a5 + c.charCodeAt(0)));
 }
+
+/**
+ * What someone typed as a group's icon: a country code ("VN", since a flag
+ * is hard to type), or any emoji, kept to its first character. "" means
+ * "pick it by itself".
+ */
+export function cleanIcon(text) {
+  const t = String(text ?? "").trim();
+  if (/^[A-Za-z]{2}$/.test(t)) return flag(t);
+  const first = [...new Intl.Segmenter().segment(t)][0]?.segment ?? "";
+  return /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(first) ? first : "";
+}
+
+/** A group's icon: the one picked for it, else the flag of the server it's on (or would use first). */
+export function groupIcon(g, loc) {
+  return g.icon || (loc ? flag(loc) : "🔁");
+}

@@ -1,7 +1,7 @@
 // options.js: Sites, Servers and Settings pages.
 
 import * as store from "../lib/store.js";
-import { flag, parseConf, toConf } from "../lib/conf.js";
+import { cleanIcon, flag, groupIcon, parseConf, toConf } from "../lib/conf.js";
 import { cleanPattern, normHost } from "../lib/hosts.js";
 
 const $ = (id) => document.getElementById(id);
@@ -59,7 +59,7 @@ function routeOptions(selected, { withDefault = false } = {}) {
   if (withDefault) opts.push(el("option", { value: "default", selected: selected === "default" }, "Default"));
   opts.push(el("option", { value: "direct", selected: selected === "direct" }, "🏠 Direct (no VPN)"));
   for (const g of d.groups) {
-    opts.push(el("option", { value: g.id, selected: selected === g.id }, `🔁 ${g.name} (group)`));
+    opts.push(el("option", { value: g.id, selected: selected === g.id }, `${groupIcon(g, d.checks[g.members[0]]?.loc)} ${g.name} (group)`));
   }
   for (const s of d.servers) {
     opts.push(el("option", { value: s.id, selected: selected === s.id }, `${flag(d.checks[s.id]?.loc)} ${s.name}`));
@@ -440,7 +440,7 @@ function renderGroups() {
         el(
           "div",
           { class: "item-main" },
-          el("span", { class: "icon" }, "🔁"),
+          el("span", { class: "icon" }, groupIcon(g, d.checks[g.members[0]]?.loc)),
           el("div", { class: "names" }, el("b", {}, g.name), el("span", {}, `used by ${uses} site setting${uses === 1 ? "" : "s"} · badge shows "${g.label || "auto"}"`)),
           el("span", { class: "pill " + cls }, el("span", { class: "dot " + cls }), text)
         ),
@@ -496,7 +496,13 @@ async function renameGroup(g) {
   const name = prompt("Name for this group", g.name);
   if (name === null || !name.trim()) return;
   const label = prompt("Short badge text (up to 4 letters, like VN). Leave empty to use the name.", g.label ?? "");
-  await updateGroup(g.id, (x) => ({ ...x, name: name.trim(), label: (label ?? x.label ?? "").trim().slice(0, 4).toUpperCase() }));
+  const icon = prompt("Icon: a country code like VN for its flag, or paste any emoji. Leave empty to use the first server's flag.", g.icon ?? "");
+  await updateGroup(g.id, (x) => ({
+    ...x,
+    name: name.trim(),
+    label: (label ?? x.label ?? "").trim().slice(0, 4).toUpperCase(),
+    icon: icon === null ? x.icon ?? "" : cleanIcon(icon),
+  }));
 }
 
 async function removeGroup(g, uses) {

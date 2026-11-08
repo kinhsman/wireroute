@@ -3,7 +3,7 @@
 //
 //   servers  [{id, name, label, privateKey, addresses, dns, mtu, publicKey,
 //              presharedKey, endpoint, allowedIPs, keepalive}]
-//   groups   [{id, name, label, members: [serverId...]}]  failover order
+//   groups   [{id, name, label, icon, members: [serverId...]}]  failover order (icon: emoji, "" = first server's flag)
 //   rules    [{id, pattern, exact, route, autoFollow}]
 //   learned  {host: ruleId}   hidden addresses sites were seen using
 //   settings {enabled, defaultRoute, killSwitch, blockWebRTC, lanDirect}

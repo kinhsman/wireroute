@@ -4,7 +4,7 @@ import vm from "node:vm";
 
 import { cleanPattern, hostOf, isLocal, isShared, matchRule, siteOf } from "../extension/lib/hosts.js";
 import { buildPac } from "../extension/lib/pac.js";
-import { flag, parseConf, toConf } from "../extension/lib/conf.js";
+import { cleanIcon, flag, groupIcon, parseConf, toConf } from "../extension/lib/conf.js";
 
 const RULES = [
   { id: "cnn", pattern: "cnn.com", route: "us" },
@@ -154,4 +154,17 @@ test("shared services are recognised, site-specific addresses aren't", () => {
     assert.ok(isShared(h), h);
   }
   for (const h of ["video.viettel.vn", "tv360.vn", "cdn.tv360.vn", "media.ethicalads.io", "googleish.com"]) assert.ok(!isShared(h), h);
+});
+
+test("group icons: a country code becomes its flag, an emoji is kept, anything else picks itself", () => {
+  assert.equal(cleanIcon("vn"), "🇻🇳");
+  assert.equal(cleanIcon(" 🇻🇳 "), "🇻🇳");
+  assert.equal(cleanIcon("🇯🇵 Japan"), "🇯🇵");
+  assert.equal(cleanIcon("🏠"), "🏠");
+  assert.equal(cleanIcon("Vietnam"), "");
+  assert.equal(cleanIcon(""), "");
+  assert.equal(cleanIcon(null), "");
+  assert.equal(groupIcon({ icon: "🇻🇳" }, "US"), "🇻🇳");
+  assert.equal(groupIcon({ icon: "" }, "US"), "🇺🇸");
+  assert.equal(groupIcon({}, undefined), "🔁");
 });

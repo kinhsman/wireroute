@@ -138,6 +138,17 @@ await step("groups: rename and take a server out", async () => {
   await js(opt, `[...${groupCard("Vietnam")}.querySelectorAll('button')].find(b => b.textContent === 'Rename').click(), true`);
   await until(async () => (await store("groups")).some((g) => g.name === "Viet" && g.label === "VN"), "renamed");
   await until(() => js(opt, `!!${groupCard("Viet")}`), "card renamed");
+  await answer(opt, ["Viet", "VN", "vn"]);
+  await js(opt, `[...${groupCard("Viet")}.querySelectorAll('button')].find(b => b.textContent === 'Rename').click(), true`);
+  await until(async () => (await store("groups")).some((g) => g.name === "Viet" && g.icon === "🇻🇳"), "country code saved as a flag");
+  await until(async () => (await js(opt, `${groupCard("Viet")}.querySelector('.icon').textContent`)) === "🇻🇳", "flag shown on the card");
+  assert.ok(await js(opt, `[...document.getElementById('default-route').options].some(o => o.textContent === '🇻🇳 Viet (group)')`), "flag shown in the pickers");
+  await answer(opt, ["Viet", "VN", "🇯🇵 Japan"]);
+  await js(opt, `[...${groupCard("Viet")}.querySelectorAll('button')].find(b => b.textContent === 'Rename').click(), true`);
+  await until(async () => (await store("groups")).some((g) => g.icon === "🇯🇵"), "pasted emoji kept, first one only");
+  await answer(opt, ["Viet", "VN", ""]);
+  await js(opt, `[...${groupCard("Viet")}.querySelectorAll('button')].find(b => b.textContent === 'Rename').click(), true`);
+  await until(async () => (await store("groups")).some((g) => g.name === "Viet" && g.icon === ""), "icon cleared");
   await js(opt, `[...${groupCard("Viet")}.querySelectorAll('.members li')].find(li => li.textContent.includes('Alpha One')).querySelector('.btn-danger').click(), true`);
   await until(async () => JSON.stringify(await members("Viet")) === JSON.stringify(["B"]), "Alpha One taken out");
 });
