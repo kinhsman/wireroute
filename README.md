@@ -90,3 +90,7 @@ your own profile. `SHOTS=/some/dir npm run e2e` also saves screenshots.
 - On Macs where the `BasicAuthOverHttpEnabled` policy is off, the helper's Digest
   login still works.
 - Logs: `~/Library/Logs/WireRoute/helper.log` (never contains keys).
+- Country flags come from a small bundled font (`extension/lib/fonts/`), since
+  Chrome on Windows has none and shows "VN" instead. The flag pictures are
+  [Twemoji](https://github.com/twitter/twemoji) (CC-BY 4.0), packed as a font by
+  [country-flag-emoji-polyfill](https://github.com/talkjs/country-flag-emoji-polyfill) (MIT).
