@@ -17,7 +17,9 @@ main() {
     *) echo "This installer is for Macs. On Windows, use the PowerShell line." >&2; exit 1 ;;
   esac
   dir=$(mktemp -d)
-  trap 'rm -rf "$dir"' EXIT
+  # The folder's name goes into the cleanup now: dir only exists inside main,
+  # and the cleanup runs after main has finished.
+  trap "rm -rf '$dir'" EXIT
   echo "Downloading the WireRoute helper..."
   curl -fsSL -o "$dir/wireroute-host" "https://github.com/$repo/releases/latest/download/wireroute-host-darwin-$arch"
   curl -fsSL -o "$dir/install.sh" "https://raw.githubusercontent.com/$repo/main/install/install.sh"
