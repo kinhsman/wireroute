@@ -168,3 +168,109 @@ test("group icons: a country code becomes its flag, an emoji is kept, anything e
   assert.equal(groupIcon({ icon: "" }, "US"), "🇺🇸");
   assert.equal(groupIcon({}, undefined), "🔁");
 });
+
+test("server health: up with a speed, slow when far, how long it's been down", async () => {
+  const { serverHealth, ago, needsCheck, countryName, RECHECK_AFTER_MS } = await import("../extension/lib/health.js");
+  const now = 1_800_000_000_000;
+  const sec = now / 1000;
+
+  const fast = serverHealth({ state: "up", pingMs: 42, since: sec - 600 }, { ip: "1.2.3.4", loc: "VN", at: now - 120_000 }, now);
+  assert.equal(fast.text, "Connected · 42 ms");
+  assert.equal(fast.cls, "ok");
+  assert.equal(fast.where, "Vietnam");
+  assert.match(fast.title, /Sites see 1\.2\.3\.4 in Vietnam, checked 2 min ago/);
+
+  const slow = serverHealth({ state: "up", pingMs: 650, relay: true }, null, now);
+  assert.equal(slow.text, "Connected, relay on · 650 ms, slow");
+  assert.equal(slow.cls, "warn");
+  assert.equal(slow.where, "");
+
+  // An older helper sends no speed: still just "Connected".
+  assert.equal(serverHealth({ state: "up" }, null, now).text, "Connected");
+
+  const down = serverHealth({ state: "down", since: sec - 300 }, null, now);
+  assert.equal(down.text, "Not reachable for 5 min");
+  assert.equal(down.cls, "bad");
+
+  assert.equal(serverHealth({ state: "error", error: "bad key" }, null, now).title, "bad key");
+  assert.equal(serverHealth(undefined, null, now).text, "Off until a site uses it");
+
+  const leak = serverHealth({ state: "up", pingMs: 5 }, { ip: "9.9.9.9", loc: "US", sameAsYou: true }, now);
+  assert.match(leak.where, /your own address \(9\.9\.9\.9\)/);
+
+  assert.equal(ago(20), "a moment");
+  assert.equal(ago(7200), "2 hr");
+  assert.equal(ago(86400), "1 day");
+  assert.equal(countryName("us"), "United States");
+  assert.equal(countryName("??"), "??");
+
+  // Exit checks: only for connected servers, and only when missing or old.
+  assert.equal(needsCheck({ state: "up" }, undefined, now), true);
+  assert.equal(needsCheck({ state: "up" }, { at: now - 60_000 }, now), false);
+  assert.equal(needsCheck({ state: "up" }, { at: now - RECHECK_AFTER_MS - 1 }, now), true);
+  assert.equal(needsCheck({ state: "down" }, undefined, now), false);
+});
+
+test("data today: counts what moved, survives restarts, starts over each day", async () => {
+  const { addUsage, bytesText, dayKey } = await import("../extension/lib/usage.js");
+  let u = addUsage(undefined, { a: { rxBytes: 1000, txBytes: 500 } }, "2026-11-09");
+  assert.deepEqual(u.bytes, {}, "first sight only sets the starting point");
+  u = addUsage(u, { a: { rxBytes: 5000, txBytes: 1500 } }, "2026-11-09");
+  assert.equal(u.bytes.a, 5000);
+  u = addUsage(u, { a: { rxBytes: 300, txBytes: 0 } }, "2026-11-09"); // tunnel restarted
+  assert.equal(u.bytes.a, 5300);
+  u = addUsage(u, { a: { rxBytes: 1300, txBytes: 0 } }, "2026-11-10"); // new day
+  assert.deepEqual(u.bytes, { a: 1000 });
+  assert.equal(bytesText(0), "0 MB");
+  assert.equal(bytesText(840 * 1024), "840 KB");
+  assert.equal(bytesText(14.4 * 1024 * 1024), "14 MB");
+  assert.equal(bytesText(1.25 * 1024 ** 3), "1.3 GB");
+  assert.match(dayKey(new Date(2026, 0, 5)), /^2026-01-05$/);
+});
+
+test("alerts: server down, group switch, all down, back again", async () => {
+  const { alertFor, nextMember } = await import("../extension/lib/alerts.js");
+  const server = { id: "a", name: "VN 1" };
+  const names = { a: "VN 1", b: "VN 2", c: "VN 3" };
+  const g = { id: "g", name: "Vietnam", members: ["a", "b", "c"] };
+  const tunnels = { a: { state: "down" }, b: { state: "up", pingMs: 300 }, c: { state: "up", pingMs: 90 } };
+
+  assert.equal(alertFor("up", "down", { server, names }).title, "VN 1 is down");
+  assert.match(alertFor("up", "down", { server, names, killSwitch: false }).message, /normal connection/);
+  assert.equal(alertFor("up", "down", { server, groups: [g], tunnels, names }).title, "Vietnam: switched to VN 2");
+  assert.equal(alertFor("up", "down", { server, groups: [{ ...g, fastest: true }], tunnels, names }).title, "Vietnam: switched to VN 3");
+  const allDown = { a: { state: "down" }, b: { state: "down" } };
+  assert.equal(alertFor("up", "down", { server, groups: [g], tunnels: allDown, names }).title, "Vietnam: every server is down");
+  assert.equal(alertFor("down", "up", { server }).title, "VN 1 is back");
+  // Starting up, or a first reading, is no news.
+  assert.equal(alertFor(undefined, "up", { server }), null);
+  assert.equal(alertFor("starting", "up", { server }), null);
+  assert.equal(alertFor(undefined, "down", { server }), null);
+  assert.equal(nextMember(g, tunnels, "b"), "c");
+});
+
+test("site packs: adds what's missing, keeps sites you already set", async () => {
+  const { PACKS, addPack } = await import("../extension/lib/packs.js");
+  const tv = PACKS.find((p) => p.id === "vn-tv");
+  assert.ok(tv.sites.includes("tv360.vn"));
+  for (const p of PACKS) for (const s of p.sites) assert.equal(cleanPattern(s), s, `${s} is a clean site`);
+  let n = 0;
+  const res = addPack([{ id: "x", pattern: "tv360.vn", route: "us" }], tv, "vn", () => "id" + n++);
+  assert.deepEqual(res.kept, ["tv360.vn"]);
+  assert.equal(res.added.length, tv.sites.length - 1);
+  assert.equal(res.rules.find((r) => r.pattern === "tv360.vn").route, "us");
+  assert.ok(res.rules.filter((r) => r.pattern !== "tv360.vn").every((r) => r.route === "vn" && r.autoFollow));
+});
+
+test("wg-easy: addresses and client lists", async () => {
+  const { cleanBase, simplify, inUseElsewhere } = await import("../extension/lib/wgeasy.js");
+  assert.equal(cleanBase("10.12.10.25:51821"), "http://10.12.10.25:51821");
+  assert.equal(cleanBase(" https://vpn.example.com/ "), "https://vpn.example.com");
+  assert.equal(cleanBase("https://example.com/wg/"), "https://example.com/wg");
+  assert.equal(cleanBase(""), "");
+  const now = Date.parse("2026-11-09T12:00:00Z");
+  const c = simplify({ id: 3, name: "TV", enabled: true, ipv4Address: "10.8.0.4", latestHandshakeAt: "2026-11-09T11:59:00Z" });
+  assert.deepEqual([c.id, c.name, c.address], [3, "TV", "10.8.0.4"]);
+  assert.equal(inUseElsewhere(c, now), true);
+  assert.equal(inUseElsewhere(simplify({ id: 4, name: "Old", latestHandshakeAt: null }), now), false);
+});

@@ -3,12 +3,18 @@
 //
 //   servers  [{id, name, label, privateKey, addresses, dns, mtu, publicKey,
 //              presharedKey, endpoint, allowedIPs, keepalive}]
-//   groups   [{id, name, label, icon, members: [serverId...]}]  failover order (icon: emoji, "" = first server's flag)
+//   groups   [{id, name, label, icon, fastest, members: [serverId...]}]  failover order (icon: emoji, "" = first server's flag;
+//            fastest: use the quickest member that's up, not the first)
 //   rules    [{id, pattern, exact, route, autoFollow}]
 //   learned  {host: ruleId}   hidden addresses sites were seen using
-//   settings {enabled, defaultRoute, killSwitch, blockWebRTC, lanDirect}
+//   settings {enabled, defaultRoute, killSwitch, blockWebRTC, lanDirect, notify,
+//             resumeAt}  resumeAt: when a pause ends (ms), 0 = not paused
 //   checks   {serverId: {ip, loc, at}}
+//   usage    {day: "YYYY-MM-DD", bytes: {serverId: n}, last: {serverId: {rx, tx}}}
+//            data through each server today; last = the helper's counters at the last look
 //   secret   {port}  the helper's preferred local port
+//   wgEasy   {url}   the wg-easy address last used to get servers
+//   (a server from wg-easy also has from: {base, client})
 
 export const DEFAULT_SETTINGS = {
   enabled: true,
@@ -16,6 +22,8 @@ export const DEFAULT_SETTINGS = {
   killSwitch: true,
   blockWebRTC: true,
   lanDirect: true,
+  notify: true,
+  resumeAt: 0,
 };
 
 const DEFAULTS = {
@@ -25,6 +33,7 @@ const DEFAULTS = {
   learned: {},
   settings: DEFAULT_SETTINGS,
   checks: {},
+  usage: { day: "", bytes: {}, last: {} },
 };
 
 export async function load(keys = Object.keys(DEFAULTS)) {

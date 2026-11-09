@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -373,6 +374,10 @@ func TestGroupFailover(t *testing.T) {
 	if st := tunnel("A").State(); st != "down" {
 		t.Fatalf("A should be down after two missed knocks, is %s", st)
 	}
+	// A dead server has no speed, and the popup can say how long it's been down.
+	if st := tunnel("A").Status(); st.PingMs != 0 || time.Since(time.Unix(st.Since, 0)) > 30*time.Second {
+		t.Fatalf("down server status: %+v", st)
+	}
 	if _, body := h.connect(t, "10.9.0.1:80"); body != "via-tunnel B" {
 		t.Fatalf("after A died: got %q, want B", body)
 	}
@@ -401,8 +406,13 @@ func TestKnockSeesALiveServer(t *testing.T) {
 	h.m.mu.Lock()
 	tun := h.m.tunnels["A"]
 	h.m.mu.Unlock()
-	if alive, knocked := tun.knock(); !knocked || !alive {
-		t.Fatalf("knock on a live server: alive=%v knocked=%v", alive, knocked)
+	if alive, knocked, took := tun.knock(); !knocked || !alive || took <= 0 {
+		t.Fatalf("knock on a live server: alive=%v knocked=%v took=%v", alive, knocked, took)
+	}
+	// The popup's speed reading comes from these knocks.
+	tun.checkHealth()
+	if st := tun.Status(); st.State != "up" || st.PingMs < 1 || st.PingMs > 2000 || st.Since == 0 {
+		t.Fatalf("live server status: %+v", st)
 	}
 }
 
@@ -437,4 +447,65 @@ func TestServerSurvivesBouncedPackets(t *testing.T) {
 	if _, body := second.connect(t, "10.9.0.1:80"); body != "via-tunnel A" {
 		t.Fatalf("new client after bounced packets: got %q", body)
 	}
+}
+
+// A fastest group uses a working member, and still fails over when it dies.
+func TestFastestGroupFailsOver(t *testing.T) {
+	privA, pubA := genKey(t)
+	privB, pubB := genKey(t)
+	spA, portA, stopA := fakeServer(t, "A", pubA)
+	spB, portB, stopB := fakeServer(t, "B", pubB)
+	// Each stops once, whichever one the test kills first.
+	stopA, stopB = onceFunc(stopA), onceFunc(stopB)
+	defer stopA()
+	defer stopB()
+	a := serverConf("A", privA, spA, portA)
+	b := serverConf("B", privB, spB, portB)
+	a.DNS = []string{"10.9.0.1"}
+	b.DNS = []string{"10.9.0.1"}
+	h := newHarness(t, &Config{
+		Servers:      []ServerConf{a, b},
+		Groups:       []Group{{ID: "G", Name: "Group", Members: []string{"A", "B"}, Fastest: true}},
+		Rules:        []Rule{{ID: "r1", Pattern: "10.9.0.1", Exact: true, Route: "G"}},
+		DefaultRoute: "direct",
+		KillSwitch:   true,
+		HoldMs:       100,
+	})
+	waitUp(t, h, "A")
+	waitUp(t, h, "B")
+	tunnel := func(id string) *Tunnel {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		return h.m.tunnels[id]
+	}
+	for i := 0; i < 3; i++ {
+		tunnel("A").checkHealth()
+		tunnel("B").checkHealth()
+	}
+	first := h.m.proxy.Pick("G")
+	if first != "A" && first != "B" {
+		t.Fatalf("pick: got %q", first)
+	}
+	if _, body := h.connect(t, "10.9.0.1:80"); body != "via-tunnel "+first {
+		t.Fatalf("connect: got %q, want via %s", body, first)
+	}
+	// Kill the one in use: the group moves to the other.
+	other, stop := "B", stopA
+	if first == "B" {
+		other, stop = "A", stopB
+	}
+	stop()
+	tunnel(first).checkHealth()
+	tunnel(first).checkHealth()
+	if got := h.m.proxy.Pick("G"); got != other {
+		t.Fatalf("after %s died: pick %q, want %s", first, got, other)
+	}
+	if _, body := h.connect(t, "10.9.0.1:80"); body != "via-tunnel "+other {
+		t.Fatalf("after %s died: got %q", first, body)
+	}
+}
+
+func onceFunc(f func()) func() {
+	var once sync.Once
+	return func() { once.Do(f) }
 }

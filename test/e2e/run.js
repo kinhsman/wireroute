@@ -169,6 +169,23 @@ await step("badge shows the site's server", async () => {
   assert.equal(text, "B");
 });
 
+await step("popup shows each connected server's speed, live", async () => {
+  const pop = await openPage(`chrome-extension://${EXT_ID}/popup/popup.html`);
+  try {
+    // B is in use: its row says connected with a round trip in ms.
+    const row = await until(async () => {
+      const t = await evaluate(pop.sessionId, `[...document.querySelectorAll('#server-list li')].find(li => li.querySelector('.info b')?.textContent === 'B')?.innerText ?? ''`);
+      return /Connected.*\d+ ms/s.test(t) && t;
+    }, "speed in popup", 20000);
+    assert.match(row, /Connected/);
+    // The helper's own reading backs it up.
+    const st = await ask(ext.sessionId, "state", { live: true });
+    assert.ok(st.tunnels.srvB.pingMs >= 1, "helper reports a speed: " + JSON.stringify(st.tunnels.srvB));
+  } finally {
+    await cdp("Target.closeTarget", { targetId: pop.targetId });
+  }
+});
+
 if (process.env.SHOTS) {
   const { writeFileSync } = await import("node:fs");
   const shot = async (url, file, width, height, wait = 1200) => {

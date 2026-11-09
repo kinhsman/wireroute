@@ -52,8 +52,22 @@ local proxy in the helper (127.0.0.1, password protected)
 
 2. In Chrome open `chrome://extensions`, switch on Developer mode (top right),
    click Load unpacked and pick the `extension` folder.
-3. Drop your WireGuard `.conf` files on the Servers page that opens.
+3. Drop your WireGuard `.conf` files on the Servers page that opens, or get
+   them straight from wg-easy 15 (sign in to wg-easy in Chrome as usual;
+   WireRoute uses that sign-in and never sees your password).
 4. On any site, click the WireRoute icon and pick a server.
+
+## What else it does
+
+- The popup shows each server's state, speed and the country sites see you
+  in (checked by itself every few hours), plus data used today.
+- Groups use the first server that's up, or the fastest one. Fastest only
+  moves when another server is clearly quicker (1.5 times and 50 ms faster),
+  so sites don't keep seeing a new address.
+- Alerts when a server you use stops answering, a group switches, or it's back.
+- Pause for an hour from the popup; it turns itself back on.
+- Right-click a link to open it through a server, or a page to move its site.
+- Site packs: add Vietnam TV, Vietnam music or US streaming sites in one go.
 
 Uninstall the helper with `./install/install.sh --remove` (also deletes that Go).
 

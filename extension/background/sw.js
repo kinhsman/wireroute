@@ -5,11 +5,17 @@
 //  2. Watch every request and tell the helper which site asked for which
 //     address ("hints"), so hidden addresses follow their site automatically.
 //  3. Point Chrome at the helper (PAC), block WebRTC leaks, show a "VPN down" page instead of leaking, keep badges current.
+//  4. Extras: pause for a while, alerts when a server dies or comes back,
+//     data used per server today, the right-click menu.
 
 import * as native from "../lib/native.js";
 import * as store from "../lib/store.js";
 import { buildPac } from "../lib/pac.js";
 import { hostOf, isShared, matchRule, normHost, siteOf } from "../lib/hosts.js";
+import { needsCheck } from "../lib/health.js";
+import { addUsage } from "../lib/usage.js";
+import { alertFor } from "../lib/alerts.js";
+import { flag, groupIcon } from "../lib/conf.js";
 
 const HOLD_MS = 1000;
 const HINT_REFRESH_MS = 60_000;
@@ -19,7 +25,7 @@ const MAX_TAB_HOSTS = 400;
 let cfg = null; // {servers, rules, learned, settings}
 let secret = null;
 let helper = { connected: false, version: "", port: 0 };
-let tunnels = {}; // serverId -> {state, error, lastHandshake, rxBytes, txBytes}
+let tunnels = {}; // serverId -> {state, error, lastHandshake, rxBytes, txBytes, pingMs, since, relay}
 let pacNonce = Date.now();
 const tabSite = new Map(); // tabId -> host of the page in that tab
 // tabId -> Map(site -> Set of hosts that site's pages loaded in this tab).
@@ -34,13 +40,15 @@ const hintSent = new Map(); // host -> {rule, at}
 const ready = init();
 
 async function init() {
-  cfg = await store.load(["servers", "groups", "rules", "learned", "settings"]);
+  cfg = await store.load(["servers", "groups", "rules", "learned", "settings", "checks"]);
   secret = await store.getSecret();
+  await resumeIfDue();
   await seedTabs();
   await applyProxy();
   await applyWebRTC();
   await updateBlockRules();
   await connectHelper();
+  await buildMenus();
 }
 
 chrome.runtime.onStartup.addListener(() => ready);
@@ -56,11 +64,31 @@ chrome.runtime.onInstalled.addListener(async ({ reason, previousVersion }) => {
     await applyAll();
   }
 });
-chrome.alarms.onAlarm.addListener(async () => {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
   await ready;
+  if (alarm.name === "resume") return resumeIfDue();
   if (!native.isConnected()) await connectHelper();
   else refreshStatus();
 });
+
+// --- pause ---
+
+/** Turn WireRoute off for a while; it comes back on by itself. */
+async function pause(minutes) {
+  const resumeAt = Date.now() + minutes * 60_000;
+  await store.save({ settings: { ...cfg.settings, enabled: false, resumeAt } });
+  chrome.alarms.create("resume", { when: resumeAt });
+  return { resumeAt };
+}
+
+/** End a pause whose time is up (also after Chrome was closed through it). */
+async function resumeIfDue() {
+  const at = cfg.settings.resumeAt;
+  if (!at || Date.now() < at) return;
+  cfg.settings = { ...cfg.settings, enabled: true, resumeAt: 0 };
+  await store.save({ settings: cfg.settings });
+  chrome.alarms.clear("resume");
+}
 
 async function seedTabs() {
   try {
@@ -117,8 +145,11 @@ function scheduleReconnect() {
 
 native.onEvent(async (msg) => {
   if (msg.type === "tunnel" && msg.tunnel) {
+    const prev = tunnels[msg.tunnel.server]?.state;
     tunnels[msg.tunnel.server] = msg.tunnel;
     await afterStateChange();
+    autoCheck();
+    alertChange(msg.tunnel.server, prev, msg.tunnel.state);
   } else if (msg.type === "disconnected") {
     helper = { connected: false, version: "", port: 0 };
     tunnels = {};
@@ -134,10 +165,163 @@ async function refreshStatus() {
     tunnels = {};
     for (const t of st.tunnels ?? []) tunnels[t.server] = t;
     await afterStateChange();
+    autoCheck();
+    trackUsage();
   } catch {
     /* disconnect handler deals with it */
   }
 }
+
+/**
+ * Fresh speed readings for the open popup. State changes already arrive as
+ * events; this only picks up the numbers that move in between, so it leaves
+ * badges and block rules alone unless a state turns out to differ.
+ */
+async function liveStatus() {
+  if (!native.isConnected()) return;
+  try {
+    const st = await native.request({ cmd: "status" }, 3000);
+    const fresh = {};
+    for (const t of st.tunnels ?? []) fresh[t.server] = t;
+    const ids = new Set([...Object.keys(fresh), ...Object.keys(tunnels)]);
+    const changed = [...ids].some((id) => fresh[id]?.state !== tunnels[id]?.state);
+    tunnels = fresh;
+    if (changed) await afterStateChange();
+    await trackUsage();
+  } catch {
+    /* keep the last readings */
+  }
+}
+
+/** Ask which IP and country sites see through a server, and remember it. */
+async function runCheck(id) {
+  if (!native.isConnected()) throw new Error("The helper isn't running");
+  const res = await native.request({ cmd: "check", server: id }, 20000);
+  const { checks } = await store.load(["checks"]);
+  checks[id] = { ip: res.ip, loc: res.loc, at: Date.now(), sameAsYou: !!res.directIP && res.directIP === res.ip };
+  await store.save({ checks });
+  const s = serverById(id);
+  if (s && !s.label && res.loc) {
+    const servers = cfg.servers.map((x) => (x.id === s.id ? { ...x, label: res.loc } : x));
+    await store.save({ servers });
+  }
+  return checks[id];
+}
+
+// Connected servers get their exit country checked by themselves, so the
+// popup shows where sites see you without a click. Redone every few hours.
+const checking = new Set();
+const checkFailedAt = new Map(); // serverId -> when the last automatic try failed
+async function autoCheck() {
+  if (!native.isConnected() || !cfg) return;
+  const { checks } = await store.load(["checks"]);
+  for (const s of cfg.servers) {
+    if (checking.has(s.id) || !needsCheck(tunnels[s.id], checks[s.id])) continue;
+    // A server whose check fails (no internet behind it) isn't retried for a while.
+    if (Date.now() - (checkFailedAt.get(s.id) ?? 0) < 10 * 60_000) continue;
+    checking.add(s.id);
+    runCheck(s.id)
+      .then(() => {
+        checkFailedAt.delete(s.id);
+        chrome.runtime.sendMessage({ event: "changed" }).catch(() => {});
+      })
+      .catch(() => checkFailedAt.set(s.id, Date.now()))
+      .finally(() => checking.delete(s.id));
+  }
+}
+
+// --- data used today ---
+
+let usageSaving = Promise.resolve();
+/** Fold the helper's byte counters into today's totals. */
+function trackUsage() {
+  usageSaving = usageSaving.then(async () => {
+    const { usage } = await store.load(["usage"]);
+    await store.save({ usage: addUsage(usage, tunnels) });
+  }).catch(() => {});
+  return usageSaving;
+}
+
+// --- alerts ---
+
+/** Routes something points at: the default and every site rule. */
+function routesInUse() {
+  return new Set([cfg.settings.defaultRoute, ...cfg.rules.map((r) => r.route)]);
+}
+
+function alertChange(id, prev, next) {
+  if (!cfg.settings.notify || !cfg.settings.enabled) return;
+  const server = serverById(id);
+  if (!server) return;
+  const used = routesInUse();
+  const names = Object.fromEntries(cfg.servers.map((s) => [s.id, s.name]));
+  const groups = cfg.groups.filter((g) => used.has(g.id) && g.members.includes(id));
+  const alert = alertFor(prev, next, { server, groups, tunnels, names, killSwitch: cfg.settings.killSwitch });
+  if (!alert) return;
+  // One alert per server at a time: a newer one replaces it.
+  chrome.notifications
+    .create("server-" + id, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
+      title: alert.title,
+      message: alert.message,
+      priority: next === "down" ? 2 : 0,
+    })
+    .catch(() => {});
+}
+
+chrome.notifications.onClicked.addListener((nid) => {
+  chrome.notifications.clear(nid);
+  chrome.tabs.create({ url: chrome.runtime.getURL("options/options.html#servers") });
+});
+
+// --- right-click menu ---
+
+let menuBuild = Promise.resolve();
+/**
+ * "Open link through..." on links, "Send this site through..." on pages,
+ * each listing Direct, your groups and your servers. Picking one sets the
+ * site's server, like the popup does.
+ */
+function buildMenus() {
+  menuBuild = menuBuild.then(async () => {
+    await chrome.contextMenus.removeAll();
+    if (!cfg.servers.length) return;
+    const choices = [
+      { id: "direct", title: "🏠 Direct (no VPN)" },
+      ...cfg.groups.map((g) => ({ id: g.id, title: `${groupIcon(g, cfg.checks?.[g.members[0]]?.loc)} ${g.name}` })),
+      ...cfg.servers.map((s) => ({ id: s.id, title: `${flag(cfg.checks?.[s.id]?.loc)} ${s.name}` })),
+    ];
+    const menus = [
+      { id: "link", title: "Open link through", contexts: ["link"] },
+      { id: "page", title: "Send this site through", contexts: ["page"] },
+    ];
+    for (const m of menus) {
+      chrome.contextMenus.create({ id: m.id, title: m.title, contexts: m.contexts, documentUrlPatterns: ["http://*/*", "https://*/*"] });
+      for (const c of choices) {
+        chrome.contextMenus.create({ id: `${m.id}:${c.id}`, parentId: m.id, title: c.title, contexts: m.contexts });
+      }
+    }
+  }).catch((e) => console.warn("menu build failed", e));
+  return menuBuild;
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  ready.then(async () => {
+    const [kind, route] = String(info.menuItemId).split(":");
+    if (!route) return;
+    if (kind === "link") {
+      const host = hostOf(info.linkUrl ?? "");
+      if (!host) return;
+      await handle({ cmd: "setSiteRoute", pattern: siteOf(host), exact: false, route });
+      chrome.tabs.create({ url: info.linkUrl, index: tab ? tab.index + 1 : undefined, openerTabId: tab?.id });
+    } else if (kind === "page" && tab) {
+      const host = tabSite.get(tab.id) ?? hostOf(tab.url ?? "");
+      if (!host) return;
+      await handle({ cmd: "setSiteRoute", pattern: siteOf(host), exact: false, route, tabId: tab.id });
+    }
+  });
+});
 
 function activeRules() {
   return cfg.settings.enabled ? cfg.rules : [];
@@ -158,7 +342,7 @@ async function sendConfig() {
     servers: cfg.servers.map(({ id, name, privateKey, addresses, dns, mtu, publicKey, presharedKey, endpoint, allowedIPs, keepalive }) => ({
       id, name, privateKey, addresses, dns, mtu, publicKey, presharedKey, endpoint, allowedIPs, keepalive,
     })),
-    groups: cfg.groups.map(({ id, name, members }) => ({ id, name, members: members.filter((m) => serverById(m)) })),
+    groups: cfg.groups.map(({ id, name, members, fastest }) => ({ id, name, fastest: !!fastest, members: members.filter((m) => serverById(m)) })),
     rules: activeRules().map(({ id, pattern, exact, route }) => ({ id, pattern, exact: !!exact, route })),
     learned: on ? activeLearned() : {},
     defaultRoute: on ? cfg.settings.defaultRoute : "direct",
@@ -501,6 +685,7 @@ function onRequest(d) {
 
 let applyTimer = null;
 let learnedPacTimer = null;
+let menuTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   ready.then(() => {
@@ -509,6 +694,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
       if (k in changes) cfg[k] = k === "settings" ? { ...store.DEFAULT_SETTINGS, ...changes[k].newValue } : changes[k].newValue ?? [];
     }
     if ("learned" in changes && !learnedDirty) cfg.learned = changes.learned.newValue ?? {};
+    // Turned back on by hand during a pause: the pause is over.
+    if ("settings" in changes && cfg.settings.enabled && cfg.settings.resumeAt) {
+      store.save({ settings: { ...cfg.settings, resumeAt: 0 } });
+      chrome.alarms.clear("resume");
+    }
+    if ("servers" in changes || "groups" in changes || "checks" in changes) {
+      if ("checks" in changes) cfg.checks = changes.checks.newValue ?? {};
+      clearTimeout(menuTimer);
+      menuTimer = setTimeout(buildMenus, 300);
+    }
     if (main) {
       clearTimeout(applyTimer);
       applyTimer = setTimeout(applyAll, 250);
@@ -547,6 +742,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 async function handle(msg) {
   switch (msg.cmd) {
     case "state":
+      if (msg.live) await liveStatus();
       return {
         helper: { ...helper, missing: native.isMissing() },
         tunnels,
@@ -616,18 +812,22 @@ async function handle(msg) {
       return { ruleId };
     }
 
-    case "check": {
-      if (!native.isConnected()) throw new Error("The helper isn't running");
-      const res = await native.request({ cmd: "check", server: msg.server }, 20000);
-      const { checks } = await store.load(["checks"]);
-      checks[msg.server] = { ip: res.ip, loc: res.loc, at: Date.now(), sameAsYou: !!res.directIP && res.directIP === res.ip };
-      await store.save({ checks });
-      const s = serverById(msg.server);
-      if (s && !s.label && res.loc) {
-        const servers = cfg.servers.map((x) => (x.id === s.id ? { ...x, label: res.loc } : x));
-        await store.save({ servers });
-      }
-      return checks[msg.server];
+    case "check":
+      return runCheck(msg.server);
+
+    case "pause":
+      return pause(msg.minutes ?? 60);
+
+    case "resume":
+      cfg.settings = { ...cfg.settings, enabled: true, resumeAt: 0 };
+      await store.save({ settings: cfg.settings });
+      chrome.alarms.clear("resume");
+      return {};
+
+    case "usage": {
+      await trackUsage();
+      const { usage } = await store.load(["usage"]);
+      return usage;
     }
 
     case "blockStatus": {

@@ -27,6 +27,8 @@ type Proxy struct {
 	mu         sync.Mutex
 	tunnels    map[string]*Tunnel
 	groups     map[string][]string // group ID -> server IDs, in failover order
+	fastest    map[string]bool     // groups that take their quickest server
+	current    map[string]string   // group ID -> server a fastest group is on
 	killSwitch bool
 	conns      map[*tracked]struct{}
 	transports map[string]*http.Transport
@@ -76,6 +78,7 @@ func NewProxy(router *Router) *Proxy {
 	return &Proxy{
 		router:     router,
 		tunnels:    map[string]*Tunnel{},
+		current:    map[string]string{},
 		killSwitch: true,
 		conns:      map[*tracked]struct{}{},
 		transports: map[string]*http.Transport{},
@@ -115,17 +118,19 @@ func (p *Proxy) Port() int {
 	return p.port
 }
 
-func (p *Proxy) SetTunnels(t map[string]*Tunnel, groups map[string][]string, killSwitch bool) {
+func (p *Proxy) SetTunnels(t map[string]*Tunnel, groups map[string][]string, fastest map[string]bool, killSwitch bool) {
 	p.mu.Lock()
 	p.tunnels = t
 	p.groups = groups
+	p.fastest = fastest
 	p.killSwitch = killSwitch
 	p.mu.Unlock()
 }
 
 // Pick is the server a new connection on route would use right now: the
 // server itself, or for a group the first member that's up (else the first
-// still starting). "" means nothing usable.
+// still starting), or for a fastest group its quickest member. "" means
+// nothing usable.
 func (p *Proxy) Pick(route string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -141,6 +146,25 @@ func (p *Proxy) pickLocked(route string) (string, *Tunnel) {
 		}
 		return "", nil
 	}
+	if p.fastest[route] {
+		cur := p.current[route]
+		id := pickFastest(members, func(id string) (string, int) {
+			if t := p.tunnels[id]; t != nil {
+				return t.State(), t.PingMs()
+			}
+			return "", 0
+		}, cur)
+		if id != cur {
+			if cur != "" && id != "" {
+				logf("group %s: %s -> %s (faster)", route, cur, id)
+			}
+			p.current[route] = id
+		}
+		if id != "" {
+			return id, p.tunnels[id]
+		}
+		return "", nil
+	}
 	for _, want := range []string{"up", "starting"} {
 		for _, id := range members {
 			if t := p.tunnels[id]; t != nil && t.State() == want {
@@ -149,6 +173,58 @@ func (p *Proxy) pickLocked(route string) (string, *Tunnel) {
 		}
 	}
 	return "", nil
+}
+
+// A fastest group only moves off a working server when another one is
+// clearly quicker: both this many times faster and this many ms faster.
+// Readings wobble, and every move changes the address sites see, so small
+// differences aren't worth it.
+const (
+	switchRatio = 1.5
+	switchGapMs = 50
+)
+
+// pickFastest chooses a fastest group's server. info gives a member's state
+// and speed (0 = not measured). current is the server it's on now, kept
+// unless it stopped working or another is clearly quicker. Members without a
+// reading count as slower than any with one; among those, list order wins.
+// When nothing is up it falls back to the first still starting, like a
+// normal group.
+func pickFastest(members []string, info func(string) (state string, ping int), current string) string {
+	best, bestPing := "", 0
+	curUp, curPing := false, 0
+	for _, id := range members {
+		state, ping := info(id)
+		if state != "up" {
+			continue
+		}
+		if id == current {
+			curUp, curPing = true, ping
+		}
+		if best == "" || (ping > 0 && (bestPing == 0 || ping < bestPing)) {
+			best, bestPing = id, ping
+		}
+	}
+	if best == "" {
+		for _, id := range members {
+			if state, _ := info(id); state == "starting" {
+				return id
+			}
+		}
+		return ""
+	}
+	if !curUp || best == current {
+		return best
+	}
+	// Both working: move only when the gap is clear. A current server with no
+	// reading yet gets the benefit of the doubt.
+	if curPing == 0 || bestPing == 0 {
+		return current
+	}
+	if float64(curPing) >= switchRatio*float64(bestPing) && curPing-bestPing >= switchGapMs {
+		return best
+	}
+	return current
 }
 
 // Recheck closes live connections whose route no longer matches, e.g. after a

@@ -174,7 +174,7 @@ func (m *manager) start(s ServerConf) {
 	used := m.cfg != nil && func() bool { _, ok := usedServers(m.cfg)[s.ID]; return ok }()
 	if err != nil {
 		logf("[%s] start failed: %v", s.Name, err)
-		st := TunnelStatus{Server: s.ID, State: "error", Error: err.Error()}
+		st := TunnelStatus{Server: s.ID, State: "error", Error: err.Error(), Since: time.Now().Unix()}
 		m.failures[s.ID] = st
 		m.mu.Unlock()
 		m.out.send(Outgoing{Type: "tunnel", Tunnel: &st})
@@ -204,13 +204,15 @@ func (m *manager) publishLocked() {
 	}
 	kill := true
 	groups := map[string][]string{}
+	fastest := map[string]bool{}
 	if m.cfg != nil {
 		kill = m.cfg.KillSwitch
 		for _, g := range m.cfg.Groups {
 			groups[g.ID] = append([]string(nil), g.Members...)
+			fastest[g.ID] = g.Fastest
 		}
 	}
-	m.proxy.SetTunnels(cp, groups, kill)
+	m.proxy.SetTunnels(cp, groups, fastest, kill)
 }
 
 // retryLoop restarts servers that failed to start (no internet yet, server

@@ -24,6 +24,10 @@
       The helper isn't running. <button class="link" id="reconnect">Try again</button>
     </div>
     <div id="off" class="notice warn hidden">WireRoute is off. Every site goes out your normal connection.</div>
+    <div id="paused" class="notice warn hidden">
+      <span id="paused-text">Paused.</span> Every site goes out your normal connection.
+      <button class="link" id="resume">Turn back on now</button>
+    </div>
     <div id="no-servers" class="card empty hidden">
       <h2>Add your first server</h2>
       <p class="dim">Drop in a WireGuard config file and you're set.</p>
@@ -66,6 +70,7 @@
 
   <footer>
     <button class="btn" id="open-options">Sites &amp; servers</button>
+    <button class="btn" id="pause" title="Every site goes out your normal connection for an hour, then WireRoute turns back on by itself">Pause 1 hour</button>
   </footer>
 
   <script type="module" src="popup.js"></script>

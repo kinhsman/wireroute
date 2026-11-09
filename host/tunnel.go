@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,9 +59,11 @@ type Tunnel struct {
 	rx, tx    int64
 	endpoint  string // resolved ip:port currently in use
 	lastResol time.Time
-	probeAddr string // "" when the tunnel can't be knocked on
-	fails     int    // missed knocks in a row
-	answered  bool   // the server has answered a knock since starting
+	probeAddr string          // "" when the tunnel can't be knocked on
+	fails     int             // missed knocks in a row
+	answered  bool            // the server has answered a knock since starting
+	since     time.Time       // when the state last changed
+	pings     []time.Duration // the last few answered knocks, newest last
 
 	// The server's relay, when it has one (relayclient.go).
 	relayAddrs   []string
@@ -171,6 +174,7 @@ func startTunnel(c ServerConf, onState func(TunnelStatus)) (*Tunnel, error) {
 		started:   time.Now(),
 		onState:   onState,
 		state:     "starting",
+		since:     time.Now(),
 		endpoint:  endpoint,
 		lastResol: time.Now(),
 		probeAddr: probeAddr,
@@ -249,7 +253,32 @@ func (t *Tunnel) Status() TunnelStatus {
 		Relay:         t.relay != nil && !t.relay.Closed(),
 		RxBytes:       t.rx,
 		TxBytes:       t.tx,
+		PingMs:        pingMs(t.pings),
+		Since:         t.since.Unix(),
 	}
+}
+
+// PingMs is the server's current speed reading (0 = none yet).
+func (t *Tunnel) PingMs() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return pingMs(t.pings)
+}
+
+// pingsKept is how many answered knocks the speed reading is taken from.
+const pingsKept = 5
+
+// pingMs is the middle of the recent knock times, so one slow knock doesn't
+// make a server look slow. 0 means no reading yet. A fast answer still counts
+// as at least 1 ms.
+func pingMs(pings []time.Duration) int {
+	if len(pings) == 0 {
+		return 0
+	}
+	sorted := append([]time.Duration(nil), pings...)
+	slices.Sort(sorted)
+	ms := int(sorted[len(sorted)/2].Round(time.Millisecond) / time.Millisecond)
+	return max(ms, 1)
 }
 
 func (t *Tunnel) Close() {
@@ -274,7 +303,7 @@ func (t *Tunnel) monitor() {
 }
 
 func (t *Tunnel) checkHealth() {
-	alive, knocked := t.knock()
+	alive, knocked, took := t.knock()
 	hs, rx, tx := t.readStats()
 	now := time.Now()
 
@@ -285,6 +314,10 @@ func (t *Tunnel) checkHealth() {
 		if alive {
 			t.fails = 0
 			t.answered = true
+			t.pings = append(t.pings, took)
+			if len(t.pings) > pingsKept {
+				t.pings = t.pings[len(t.pings)-pingsKept:]
+			}
 		} else {
 			t.fails++
 		}
@@ -303,6 +336,12 @@ func (t *Tunnel) checkHealth() {
 		// One missed knock: keep the last verdict until the next one.
 	default:
 		t.state = "down"
+	}
+	if t.state != prev {
+		t.since = now
+		if t.state == "down" {
+			t.pings = nil // an old reading would say a dead server is fast
+		}
 	}
 	state := t.state
 	needResolve := state == "down" && now.Sub(t.lastResol) > reresolveEvery
@@ -328,21 +367,24 @@ func (t *Tunnel) checkHealth() {
 // knock opens and closes a TCP connection to the tunnel's DNS server. A
 // connection, or a "refused"/"reset" from the far end, proves the server is
 // passing traffic. Anything else (silence, a timeout, a local error) is a
-// miss. knocked is false when the tunnel has nothing to knock on.
-func (t *Tunnel) knock() (alive, knocked bool) {
+// miss. knocked is false when the tunnel has nothing to knock on. took is the
+// round trip, which the popup shows as the server's speed.
+func (t *Tunnel) knock() (alive, knocked bool, took time.Duration) {
 	if t.probeAddr == "" {
-		return false, false
+		return false, false, 0
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
+	began := time.Now()
 	c, err := t.tnet.DialContext(ctx, "tcp", t.probeAddr)
+	took = time.Since(began)
 	if err == nil {
 		c.Close()
-		return true, true
+		return true, true, took
 	}
 	msg := strings.ToLower(err.Error())
 	answered := strings.Contains(msg, "refused") || strings.Contains(msg, "reset")
-	return answered && ctx.Err() == nil, true
+	return answered && ctx.Err() == nil, true, took
 }
 
 func ageSecs(hs int64, now time.Time) int64 {

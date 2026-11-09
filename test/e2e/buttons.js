@@ -123,6 +123,15 @@ await step("groups: add servers, then change their order", async () => {
   await until(async () => JSON.stringify(await members("Vietnam")) === JSON.stringify(["B", "Alpha One"]), "B moved first");
 });
 
+await step("groups: switch between first-that's-up and fastest", async () => {
+  const pick = (v) => js(opt, `(() => { const s = ${groupCard("Vietnam")}.querySelector('.item-opts select'); s.value = '${v}'; s.dispatchEvent(new Event('change')); return true })()`);
+  await pick("fastest");
+  await until(async () => (await store("groups")).find((g) => g.name === "Vietnam")?.fastest === true, "fastest saved");
+  await until(async () => (await js(opt, `${groupCard("Vietnam")}.querySelector('.item-opts select').value`)) === "fastest", "card shows fastest");
+  await pick("order");
+  await until(async () => (await store("groups")).find((g) => g.name === "Vietnam")?.fastest === false, "back to in order");
+});
+
 await step("groups: show up in every server picker", async () => {
   await js(opt, `location.hash = '#sites', true`);
   await sleep(300);
@@ -221,7 +230,7 @@ await js(opt, `location.hash = '#settings', true`);
 await sleep(300);
 
 await step("settings: every switch saves", async () => {
-  for (const key of ["killSwitch", "blockWebRTC", "lanDirect", "enabled"]) {
+  for (const key of ["killSwitch", "blockWebRTC", "notify", "lanDirect", "enabled"]) {
     const before = (await store("settings"))[key];
     await click(opt, `[data-setting="${key}"]`);
     await until(async () => (await store("settings"))[key] === !before, `${key} flipped`);
@@ -264,7 +273,60 @@ await step("settings: forget all detected addresses", async () => {
   await until(async () => Object.keys(await store("learned")).length === 0, "forgotten");
 });
 
+await step("sites: a pack adds its sites in one go, keeping ones already set", async () => {
+  await js(opt, `location.hash = '#sites', true`);
+  await sleep(300);
+  const servers = await store("servers");
+  const bId = servers.find((s) => s.name === "B").id;
+  const before = await store("rules");
+  await js(opt, `chrome.storage.local.set({ rules: [...${JSON.stringify(before)}, { id: 'keep', pattern: 'tv360.vn', exact: false, route: 'direct', autoFollow: true }] })`);
+  await until(async () => (await text(opt, "#site-list")).includes("tv360.vn"), "existing site shown");
+  await js(opt, `document.getElementById('pack-pick').value = 'vn-tv'; document.getElementById('pack-route').value = '${bId}'; document.getElementById('add-pack').requestSubmit(), true`);
+  await until(async () => (await store("rules")).some((r) => r.pattern === "vtvgo.vn" && r.route === bId), "pack saved");
+  const rules = await store("rules");
+  assert.equal(rules.find((r) => r.pattern === "tv360.vn").route, "direct", "a site you already set keeps its server");
+  assert.match(await text(opt, "#pack-note"), /Added 7 sites[\s\S]*tv360\.vn was already/);
+  await js(opt, `chrome.storage.local.set({ rules: ${JSON.stringify(before)} })`);
+  await until(async () => (await store("rules")).length === before.length, "site list put back");
+});
+
+await step("right-click menu lists Direct, groups and servers for links and pages", async () => {
+  const servers = await store("servers");
+  for (const id of ["link:direct", "page:direct", ...servers.map((s) => `link:${s.id}`)]) {
+    const ok = await js(opt, `chrome.contextMenus.update(${JSON.stringify(id)}, {}).then(() => true, () => false)`);
+    assert.ok(ok, `menu item ${id} missing`);
+  }
+});
+
 // --- Popup ---
+
+await step("popup: pause for an hour, then turn back on", async () => {
+  const pop = await b.openPage(`chrome-extension://${EXT_ID}/popup/popup.html`);
+  await until(() => visible(pop, "pause"), "pause button");
+  await click(pop, "#pause");
+  await until(async () => {
+    const s = await store("settings");
+    return s.enabled === false && s.resumeAt > Date.now() + 55 * 60_000;
+  }, "paused for an hour");
+  await until(() => visible(pop, "paused"), "paused notice");
+  assert.match(await text(pop, "#paused-text"), /Paused until/);
+  assert.ok(await js(opt, `chrome.alarms.get('resume').then(a => !!a)`), "resume alarm set");
+  // Chrome's connection is handed back while paused.
+  await until(async () => (await js(opt, "chrome.proxy.settings.get({}).then(d => d.value.mode)")) === "system", "proxy released");
+  await click(pop, "#resume");
+  await until(async () => {
+    const s = await store("settings");
+    return s.enabled === true && !s.resumeAt;
+  }, "back on");
+  await until(async () => !(await js(opt, `chrome.alarms.get('resume').then(a => !!a)`)), "alarm cleared");
+  await b.close(pop);
+});
+
+await step("pause ends by itself when its time is up", async () => {
+  await js(opt, `chrome.storage.local.get('settings').then(({settings}) => chrome.storage.local.set({ settings: { ...settings, enabled: false, resumeAt: Date.now() + 1500 } }))`);
+  await js(opt, `chrome.alarms.create('resume', { when: Date.now() + 1500 }), true`);
+  await until(async () => (await store("settings")).enabled === true, "resumed by itself", 70000);
+});
 
 await step("popup: the on/off switch works and says when it's off", async () => {
   const site = await b.openPage("http://site-a.test/");
@@ -315,6 +377,84 @@ await step("servers: delete warns when sites use it, then removes it", async () 
   assert.equal(await buttonIn(opt, "Alpha One", "Delete"), "clicked");
   await until(async () => !(await store("servers")).some((s) => s.name === "Alpha One"), "deleted");
   assert.match(await js(opt, "window.__msg"), /site setting/);
+});
+
+await step("wg-easy: asks you to sign in, lists configs, adds the ones you pick, makes a new one", async () => {
+  const { createServer } = await import("node:http");
+  const { randomBytes } = await import("node:crypto");
+  const confA = readFileSync(join(tmp, "A.conf"), "utf8");
+  const confNew = confA.replace(/PrivateKey = .*/, `PrivateKey = ${randomBytes(32).toString("base64")}`);
+  const clients = [
+    { id: 1, name: "Laptop", enabled: true, ipv4Address: "10.8.0.2", latestHandshakeAt: null },
+    { id: 2, name: "TV", enabled: true, ipv4Address: "10.8.0.3", latestHandshakeAt: new Date().toISOString() },
+  ];
+  const confs = { 1: confA, 2: readFileSync(join(tmp, "B.conf"), "utf8") };
+  let created = null;
+  const fake = createServer((req, res) => {
+    const signedIn = /(^|; )sid=ok/.test(req.headers.cookie ?? "");
+    if (req.url === "/login") {
+      res.writeHead(200, { "Set-Cookie": "sid=ok; Path=/; HttpOnly; SameSite=Strict", "Content-Type": "text/html" });
+      return res.end("signed in");
+    }
+    if (!req.url.startsWith("/api/")) return res.end("wg-easy");
+    if (!signedIn) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      return res.end('{"statusMessage":"Not authenticated"}');
+    }
+    if (req.method === "GET" && req.url === "/api/client") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(clients));
+    }
+    const m = req.url.match(/^\/api\/client\/(\d+)\/configuration$/);
+    if (m && confs[m[1]]) return res.end(confs[m[1]]);
+    if (req.method === "POST" && req.url === "/api/client") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        created = JSON.parse(body);
+        clients.push({ id: 3, name: created.name, enabled: true, ipv4Address: "10.8.0.4", latestHandshakeAt: null });
+        confs[3] = confNew;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"success":true,"clientId":3}');
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((r) => fake.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${fake.address().port}`;
+  try {
+    await js(opt, `location.hash = '#servers', true`);
+    await sleep(300);
+    await click(opt, "#show-wgeasy");
+    await js(opt, `document.getElementById('wgeasy-url').value = '127.0.0.1:${fake.address().port}'; document.getElementById('wgeasy').requestSubmit(), true`);
+    await until(() => visible(opt, "wgeasy-signin"), "asked to sign in");
+
+    // Sign in on the wg-easy page itself, as you would.
+    const login = await b.openPage(base + "/login");
+    await sleep(500);
+    await b.close(login);
+    await js(opt, `document.getElementById('wgeasy').requestSubmit(), true`);
+    await until(async () => (await text(opt, "#wgeasy-list")).includes("Laptop"), "configs listed");
+    assert.ok(!(await visible(opt, "wgeasy-signin")), "sign-in notice gone");
+    assert.match(await text(opt, "#wgeasy-list"), /TV.*Another device is using it now/s);
+
+    await js(opt, `document.querySelector('#wgeasy-list input[value="1"]').click(), true`);
+    await click(opt, "#wgeasy-add");
+    await until(async () => (await store("servers")).some((s) => s.name === "Laptop"), "Laptop added");
+    const laptop = (await store("servers")).find((s) => s.name === "Laptop");
+    assert.equal(laptop.from.base, base);
+    await until(async () => /Laptop\s*Already added/.test(await text(opt, "#wgeasy-list")), "marked as added");
+
+    await answer(opt, ["WireRoute test"]);
+    await click(opt, "#wgeasy-new");
+    await until(async () => (await store("servers")).some((s) => s.name === "WireRoute test"), "new config made and added");
+    assert.deepEqual(created, { name: "WireRoute test", expiresAt: null });
+    assert.equal((await store("wgEasy")).url, base);
+  } finally {
+    fake.close();
+  }
 });
 
 await step("popup with no servers offers to add one", async () => {

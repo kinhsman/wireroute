@@ -3,6 +3,8 @@
 import * as store from "../lib/store.js";
 import { flag, groupIcon } from "../lib/conf.js";
 import { normHost } from "../lib/hosts.js";
+import { serverHealth, speedText } from "../lib/health.js";
+import { SHOW_FROM_BYTES, bytesText, dayKey } from "../lib/usage.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -21,28 +23,15 @@ function el(tag, props = {}, ...children) {
   return n;
 }
 
-export function stateText(st) {
-  switch (st?.state) {
-    case "up":
-      // The server's relay is fetching sites for us (custom wg-easy image).
-      return { text: st.relay ? "Connected, relay on" : "Connected", cls: "ok" };
-    case "starting":
-      return { text: "Connecting", cls: "warn" };
-    case "down":
-      return { text: "Not reachable", cls: "bad" };
-    case "error":
-      return { text: "Problem", cls: "bad" };
-    default:
-      return { text: "Off until a site uses it", cls: "" };
-  }
-}
+// While the popup is open, speed and up/down readings refresh this often.
+const LIVE_EVERY_MS = 4000;
 
 async function loadAll() {
   // ?tab=<id> picks a tab explicitly (used by the screenshot test).
   const forced = Number(new URLSearchParams(location.search).get("tab"));
   [tab] = forced ? [await chrome.tabs.get(forced)] : await chrome.tabs.query({ active: true, currentWindow: true });
-  const saved = await store.load(["servers", "groups", "rules", "settings", "checks"]);
-  const state = await store.ask("state");
+  const saved = await store.load(["servers", "groups", "rules", "settings", "checks", "usage"]);
+  const state = await store.ask("state", { live: true });
   const info = tab ? await store.ask("tabInfo", { tabId: tab.id, url: tab.url }) : { host: "" };
   data = { ...saved, state, info };
 }
@@ -56,11 +45,16 @@ function routeName(route) {
 function groupState(g, via) {
   const states = g.members.map((id) => data.state.tunnels[id]?.state);
   const up = states.filter((s) => s === "up").length;
-  if (via) return { text: `Using ${routeName(via)}`, cls: "ok" };
+  if (via) {
+    const h = serverHealth(data.state.tunnels[via], null);
+    const speed = speedText(data.state.tunnels[via]?.pingMs);
+    const lead = g.fastest ? "Fastest is" : "Using";
+    return { text: `${lead} ${routeName(via)}` + (speed ? ` · ${speed}` : ""), cls: h.cls || "ok" };
+  }
   if (states.every((s) => !s)) return { text: "Off until a site uses it", cls: "" };
   if (up === 0 && states.some((s) => s === "starting")) return { text: "Connecting", cls: "warn" };
   if (up === 0) return { text: "All servers down", cls: "bad" };
-  return { text: `${up} of ${g.members.length} servers up`, cls: "ok" };
+  return { text: `${up} of ${g.members.length} servers up` + (g.fastest ? ", uses the fastest" : ""), cls: "ok" };
 }
 
 function render() {
@@ -68,7 +62,14 @@ function render() {
   $("enabled").checked = settings.enabled;
   $("helper-missing").classList.toggle("hidden", !state.helper.missing);
   $("helper-down").classList.toggle("hidden", state.helper.missing || state.helper.connected || !settings.enabled);
-  $("off").classList.toggle("hidden", settings.enabled);
+  const paused = !settings.enabled && settings.resumeAt > Date.now();
+  $("off").classList.toggle("hidden", settings.enabled || paused);
+  $("paused").classList.toggle("hidden", !paused);
+  if (paused) {
+    const until = new Date(settings.resumeAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    $("paused-text").textContent = `Paused until ${until}.`;
+  }
+  $("pause").classList.toggle("hidden", !settings.enabled || servers.length === 0);
   $("no-servers").classList.toggle("hidden", servers.length > 0);
 
   const hasSite = !!info.host && servers.length > 0;
@@ -80,14 +81,11 @@ function render() {
   const list = $("server-list");
   list.replaceChildren(
     ...servers.map((s) => {
-      const st = stateText(state.tunnels[s.id]);
       const check = checks[s.id];
-      const sub = check?.sameAsYou
-        ? `⚠️ Shows your own address (${check.ip})`
-        : check
-          ? `Shows as ${check.ip}`
-          : st.text;
-      const btn = el("button", { class: "btn btn-sm", title: "Check which IP and country sites see" }, "Check");
+      const h = serverHealth(state.tunnels[s.id], check);
+      const today = data.usage?.day === dayKey() ? data.usage.bytes[s.id] : 0;
+      const extra = [h.where, today >= SHOW_FROM_BYTES ? `${bytesText(today)} today` : ""].filter(Boolean).join(" · ");
+      const btn = el("button", { class: "btn btn-sm", title: "Check again which IP and country sites see" }, "Check");
       btn.addEventListener("click", async () => {
         btn.disabled = true;
         btn.textContent = "Checking";
@@ -103,8 +101,14 @@ function render() {
         "li",
         {},
         el("span", { class: "flag" }, flag(check?.loc)),
-        el("div", { class: "info" }, el("b", {}, s.name), el("span", {}, sub)),
-        el("span", { class: "dot " + st.cls, title: st.text }),
+        el(
+          "div",
+          { class: "info", title: h.title },
+          el("b", {}, s.name),
+          el("span", { class: "health" }, h.text),
+          extra ? el("span", { class: "where" + (check?.sameAsYou ? " bad" : "") }, extra) : null
+        ),
+        el("span", { class: "dot " + h.cls, title: h.text }),
         btn
       );
     })
@@ -154,15 +158,15 @@ function renderSite() {
       return { value: g.id, icon: groupIcon(g, lead), name: g.name, sub: st.text, cls: st.cls };
     }),
     ...servers.map((s) => {
-      const st = stateText(state.tunnels[s.id]);
-      return { value: s.id, icon: flag(checks[s.id]?.loc), name: s.name, sub: st.text, cls: st.cls };
+      const h = serverHealth(state.tunnels[s.id], checks[s.id]);
+      return { value: s.id, icon: flag(checks[s.id]?.loc), name: s.name, sub: h.text, cls: h.cls, title: h.title };
     }),
   ];
   $("routes").replaceChildren(
     ...options.map((o) => {
       const b = el(
         "button",
-        { class: "route", role: "radio", "aria-checked": String(o.value === current) },
+        { class: "route", role: "radio", "aria-checked": String(o.value === current), title: o.title },
         el("span", { class: "flag" }, o.icon),
         el("span", { class: "name" }, o.name, el("span", { class: "sub" }, o.sub)),
         o.cls !== undefined ? el("span", { class: "dot " + o.cls }) : null,
@@ -179,6 +183,9 @@ function renderSite() {
   $("detected-count").textContent = info.rule
     ? `${following} of ${info.hosts.length} hidden addresses go with this site`
     : `This site loaded ${info.hosts.length} other addresses`;
+  // The live refresh redraws this list; keep it where you scrolled it.
+  const keepScroll = $("detected-list").scrollTop;
+  queueMicrotask(() => ($("detected-list").scrollTop = keepScroll));
   $("detected-list").replaceChildren(
     ...info.hosts.map((h) =>
       el(
@@ -236,6 +243,24 @@ $("enabled").addEventListener("change", async (e) => {
   setTimeout(refresh, 400);
 });
 $("open-options").addEventListener("click", () => chrome.runtime.openOptionsPage());
+$("pause").addEventListener("click", async () => {
+  busy = true;
+  try {
+    await store.ask("pause", { minutes: 60 });
+  } finally {
+    busy = false;
+  }
+  refresh();
+});
+$("resume").addEventListener("click", async () => {
+  busy = true;
+  try {
+    await store.ask("resume");
+  } finally {
+    busy = false;
+  }
+  refresh();
+});
 $("add-server").addEventListener("click", () => chrome.tabs.create({ url: chrome.runtime.getURL("options/options.html#servers") }));
 $("open-setup").addEventListener("click", () => chrome.tabs.create({ url: chrome.runtime.getURL("setup/setup.html") }));
 $("reconnect").addEventListener("click", async () => {
@@ -255,3 +280,8 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 refresh();
+// Keep speed and up/down live while the popup is open. Skipped mid-click so a
+// redraw never swallows a pick.
+setInterval(() => {
+  if (!busy && !document.hidden) refresh().catch(() => {});
+}, LIVE_EVERY_MS);

@@ -2,7 +2,7 @@ package main
 
 // Version is reported to the extension on hello so the UI can show it and
 // warn when the extension and helper drift apart.
-const Version = "1.3.2"
+const Version = "1.3.5"
 
 // Route values. Anything else is a server ID.
 const (
@@ -34,11 +34,13 @@ type Rule struct {
 }
 
 // Group is a set of servers a site can use; connections take the first one
-// that's up, so if it dies the site moves to the next.
+// that's up, so if it dies the site moves to the next. With Fastest set they
+// take the quickest one that's up instead (see pickFastest).
 type Group struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	Members []string `json:"members"`
+	Fastest bool     `json:"fastest,omitempty"`
 }
 
 // Config is the whole routing picture. The extension sends it on every change.
@@ -82,7 +84,9 @@ type TunnelStatus struct {
 	LastHandshake int64  `json:"lastHandshake,omitempty"` // unix seconds
 	RxBytes       int64  `json:"rxBytes"`
 	TxBytes       int64  `json:"txBytes"`
-	Relay         bool   `json:"relay,omitempty"` // connections go through the server's relay
+	Relay         bool   `json:"relay,omitempty"`  // connections go through the server's relay
+	PingMs        int    `json:"pingMs,omitempty"` // round trip through the server; 0 = not measured
+	Since         int64  `json:"since,omitempty"`  // unix seconds the state last changed
 }
 
 // Outgoing is any message to the extension. ID echoes the request it answers;

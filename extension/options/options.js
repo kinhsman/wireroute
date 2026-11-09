@@ -3,6 +3,10 @@
 import * as store from "../lib/store.js";
 import { cleanIcon, flag, groupIcon, parseConf, toConf } from "../lib/conf.js";
 import { cleanPattern, normHost } from "../lib/hosts.js";
+import { serverHealth, speedText } from "../lib/health.js";
+import { SHOW_FROM_BYTES, bytesText, dayKey } from "../lib/usage.js";
+import { PACKS, addPack } from "../lib/packs.js";
+import * as wgeasy from "../lib/wgeasy.js";
 
 const $ = (id) => document.getElementById(id);
 let d = null; // {servers, rules, learned, settings, checks, state}
@@ -39,7 +43,7 @@ window.addEventListener("hashchange", showTab);
 // --- data ---
 
 async function load() {
-  const saved = await store.load(["servers", "groups", "rules", "learned", "settings", "checks"]);
+  const saved = await store.load(["servers", "groups", "rules", "learned", "settings", "checks", "usage"]);
   let state = { helper: { connected: false, missing: false }, tunnels: {} };
   try {
     state = await store.ask("state");
@@ -72,15 +76,8 @@ function routeOptions(selected, { withDefault = false } = {}) {
 }
 
 function tunnelPill(id) {
-  const st = d.state.tunnels[id]?.state;
-  const map = {
-    up: ["ok", "Connected"],
-    starting: ["warn", "Connecting"],
-    down: ["bad", "Not reachable"],
-    error: ["bad", "Problem"],
-  };
-  const [cls, text] = map[st] ?? ["", "Off until a site uses it"];
-  return el("span", { class: "pill " + cls, title: d.state.tunnels[id]?.error ?? "" }, el("span", { class: "dot " + cls }), text);
+  const h = serverHealth(d.state.tunnels[id], d.checks[id]);
+  return el("span", { class: "pill " + h.cls, title: h.title }, el("span", { class: "dot " + h.cls }), h.text);
 }
 
 // --- render ---
@@ -111,6 +108,11 @@ function render() {
 
 function renderSites() {
   $("site-route").replaceChildren(...routeOptions(d.servers[0]?.id ?? "direct"));
+  $("add-pack").classList.toggle("hidden", d.servers.length === 0);
+  const packPick = $("pack-pick").value;
+  const packRoute = $("pack-route").value;
+  $("pack-pick").replaceChildren(...PACKS.map((p) => el("option", { value: p.id, selected: p.id === packPick }, `${p.name} (${p.sites.length})`)));
+  $("pack-route").replaceChildren(...routeOptions(packRoute || (d.groups[0]?.id ?? d.servers[0]?.id ?? "direct")));
   $("default-route").replaceChildren(...routeOptions(d.settings.defaultRoute));
   $("sites-empty").classList.toggle("hidden", d.rules.length > 0);
 
@@ -222,6 +224,7 @@ function renderServers() {
               : "Not checked yet",
             ` · used by ${d.settings.defaultRoute === s.id ? "every other site" : `${usedBy[s.id] ?? 0} site${usedBy[s.id] === 1 ? "" : "s"}`}`,
             ...d.groups.filter((g) => g.members.includes(s.id)).map((g) => ` · in group ${g.name}`),
+            d.usage?.day === dayKey() && d.usage.bytes[s.id] >= SHOW_FROM_BYTES ? ` · ${bytesText(d.usage.bytes[s.id])} today` : "",
             ` · badge shows "${s.label || "auto"}"`
           ),
           el("span", { class: "spacer" }),
@@ -289,6 +292,21 @@ $("add-site").addEventListener("submit", (e) => {
   });
 });
 
+$("add-pack").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const pack = PACKS.find((p) => p.id === $("pack-pick").value);
+  const route = $("pack-route").value;
+  if (!pack) return;
+  change(async () => {
+    const { rules: saved } = await fresh(["rules"]);
+    const res = addPack(saved, pack, route, store.newId);
+    await store.save({ rules: res.rules });
+    const kept = res.kept.length ? ` ${res.kept.join(", ")} ${res.kept.length === 1 ? "was" : "were"} already in the list and kept ${res.kept.length === 1 ? "its" : "their"} server.` : "";
+    showNotice("pack-note", res.added.length ? `Added ${res.added.length} site${res.added.length === 1 ? "" : "s"} from ${pack.name}.${kept}` : `Every site in ${pack.name} was already in the list.`);
+    await refresh();
+  });
+});
+
 $("default-route").addEventListener("change", (e) => {
   const value = e.target.value;
   change(async () => {
@@ -306,14 +324,15 @@ const addServers = (entries) => change(async () => {
   const servers = [...(await fresh(["servers"])).servers];
   const added = [];
   const errors = [];
-  for (const { name, text } of entries) {
+  for (const { name, text, from } of entries) {
     try {
       const s = parseConf(text);
       if (servers.some((x) => sameServer(x, s))) {
         errors.push(`${name}: already added.`);
         continue;
       }
-      servers.push({ id: store.newId(), name: name || "Server " + (servers.length + 1), label: "", ...s });
+      // from: where it came from (wg-easy address and client), to spot repeats.
+      servers.push({ id: store.newId(), name: name || "Server " + (servers.length + 1), label: "", ...s, ...(from ? { from } : {}) });
       added.push(name);
     } catch (e) {
       errors.push(`${name}: ${e.message}`);
@@ -423,17 +442,26 @@ function renderGroups() {
         ? g.members.map((id, i) => {
             const st = d.state.tunnels[id]?.state;
             const dot = st === "up" ? "ok" : st === "starting" ? "warn" : st ? "bad" : "";
+            const speed = st === "up" ? speedText(d.state.tunnels[id]?.pingMs) : "";
             return el(
               "li",
               {},
               el("span", { class: "grow" }, `${flag(d.checks[id]?.loc)} ${serverName(id)}`),
+              speed ? el("span", { class: "speed" }, speed) : null,
               el("span", { class: "dot " + dot, title: st ?? "off" }),
               el("button", { class: "btn btn-sm", title: "Try this one earlier", disabled: i === 0, onclick: () => moveMember(g.id, i, -1) }, "↑"),
               el("button", { class: "btn btn-sm", title: "Try this one later", disabled: i === g.members.length - 1, onclick: () => moveMember(g.id, i, 1) }, "↓"),
               el("button", { class: "btn btn-sm btn-danger", title: "Take out of this group", onclick: () => removeMember(g.id, id) }, "Remove")
             );
           })
-        : [el("li", { class: "empty-note" }, "Add servers below. The first one is used while it's up.")];
+        : [el("li", { class: "empty-note" }, g.fastest ? "Add servers below. The fastest one that's up is used." : "Add servers below. The first one is used while it's up.")];
+      const mode = el(
+        "select",
+        { "aria-label": `Which server ${g.name} uses`, title: "Fastest only moves to another server when it's clearly quicker, so sites don't keep changing address" },
+        el("option", { value: "order", selected: !g.fastest }, "The first one that's up"),
+        el("option", { value: "fastest", selected: !!g.fastest }, "The fastest one that's up")
+      );
+      mode.addEventListener("change", () => setFastest(g.id, mode.value === "fastest"));
       return el(
         "div",
         { class: "card item", "data-group": g.id },
@@ -451,6 +479,7 @@ function renderGroups() {
         el(
           "div",
           { class: "item-opts" },
+          el("label", {}, "Uses", mode),
           el("span", { class: "spacer" }),
           el("button", { class: "btn btn-sm", onclick: () => renameGroup(g) }, "Rename"),
           el("button", { class: "btn btn-sm btn-danger", onclick: () => removeGroup(g, uses) }, "Delete")
@@ -467,6 +496,7 @@ const updateGroup = (id, fn) =>
     await refresh();
   });
 
+const setFastest = (id, fastest) => updateGroup(id, (g) => ({ ...g, fastest }));
 const addMember = (id, serverId) => serverId && updateGroup(id, (g) => (g.members.includes(serverId) ? g : { ...g, members: [...g.members, serverId] }));
 const removeMember = (id, serverId) => updateGroup(id, (g) => ({ ...g, members: g.members.filter((m) => m !== serverId) }));
 const moveMember = (id, index, by) =>
@@ -593,3 +623,99 @@ chrome.runtime.onMessage.addListener((msg) => {
 
 showTab();
 refresh();
+
+// --- wg-easy ---
+
+let wgBase = "";
+let wgClients = [];
+
+function wgShow(which, text = "") {
+  $("wgeasy-signin").classList.toggle("hidden", which !== "signin");
+  showNotice("wgeasy-error", which === "error" ? text : "");
+}
+
+async function wgConnect() {
+  const base = wgeasy.cleanBase($("wgeasy-url").value);
+  if (!base) return wgShow("error", "Type the address you open wg-easy at, like 10.12.10.25:51821.");
+  wgBase = base;
+  wgShow("");
+  $("wgeasy-connect").disabled = true;
+  try {
+    wgClients = await wgeasy.listClients(base);
+    await store.save({ wgEasy: { url: base } });
+    renderWgClients();
+  } catch (e) {
+    $("wgeasy-clients").classList.add("hidden");
+    if (e instanceof wgeasy.SignInNeeded) wgShow("signin");
+    else wgShow("error", e.message);
+  } finally {
+    $("wgeasy-connect").disabled = false;
+  }
+}
+
+function renderWgClients() {
+  const mine = new Set(d.servers.filter((s) => s.from?.base === wgBase).map((s) => String(s.from.client)));
+  $("wgeasy-clients").classList.remove("hidden");
+  $("wgeasy-list").replaceChildren(
+    ...(wgClients.length
+      ? wgClients.map((c) => {
+          const have = mine.has(String(c.id));
+          const busy = wgeasy.inUseElsewhere(c);
+          const note = have ? "Already added" : !c.enabled ? "Turned off in wg-easy" : busy ? "⚠️ Another device is using it now" : c.address;
+          const box = el("input", { type: "checkbox", value: String(c.id), disabled: have || !c.enabled ? "" : null });
+          return el("li", {}, el("label", {}, box, el("span", {}, c.name)), el("span", { class: "note" + (busy && !have ? " warn" : "") }, note));
+        })
+      : [el("li", { class: "dim" }, "No configs yet. Make one for this computer below.")])
+  );
+}
+
+async function wgImport(ids) {
+  const entries = [];
+  const errors = [];
+  for (const id of ids) {
+    const c = wgClients.find((x) => String(x.id) === String(id));
+    try {
+      const text = await wgeasy.clientConfig(wgBase, id);
+      entries.push({ name: c?.name ?? `wg-easy ${id}`, text, from: { base: wgBase, client: id } });
+    } catch (e) {
+      errors.push(`${c?.name ?? id}: ${e instanceof wgeasy.SignInNeeded ? "signed out of wg-easy" : e.message}`);
+    }
+  }
+  if (errors.length) wgShow("error", errors.join(" "));
+  if (entries.length) await addServers(entries);
+  if (wgBase) wgClients = await wgeasy.listClients(wgBase).catch(() => wgClients);
+  renderWgClients();
+}
+
+$("show-wgeasy").addEventListener("click", async () => {
+  $("wgeasy").classList.remove("hidden");
+  const { wgEasy } = await chrome.storage.local.get("wgEasy");
+  if (wgEasy?.url && !$("wgeasy-url").value) $("wgeasy-url").value = wgEasy.url;
+  $("wgeasy-url").focus();
+});
+$("wgeasy-close").addEventListener("click", () => $("wgeasy").classList.add("hidden"));
+$("wgeasy").addEventListener("submit", (e) => {
+  e.preventDefault();
+  wgConnect();
+});
+$("wgeasy-open").addEventListener("click", () => {
+  const base = wgeasy.cleanBase($("wgeasy-url").value);
+  if (base) chrome.tabs.create({ url: base + "/" });
+});
+$("wgeasy-add").addEventListener("click", async () => {
+  const ids = [...document.querySelectorAll("#wgeasy-list input:checked")].map((x) => x.value);
+  if (!ids.length) return wgShow("error", "Tick the configs you want first.");
+  await wgImport(ids);
+});
+$("wgeasy-new").addEventListener("click", async () => {
+  const name = prompt("Name for this computer's config in wg-easy", "WireRoute " + (navigator.userAgentData?.platform || "computer"));
+  if (name === null || !name.trim()) return;
+  try {
+    const id = await wgeasy.createClient(wgBase, name.trim());
+    wgClients = await wgeasy.listClients(wgBase);
+    await wgImport([id]);
+  } catch (e) {
+    if (e instanceof wgeasy.SignInNeeded) wgShow("signin");
+    else wgShow("error", e.message);
+  }
+});

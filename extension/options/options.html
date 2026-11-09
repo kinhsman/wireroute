@@ -33,6 +33,14 @@
       </form>
       <div id="site-error" class="notice bad hidden"></div>
 
+      <form id="add-pack" class="card add-row">
+        <span class="pack-label">Add a pack</span>
+        <select id="pack-pick" aria-label="Pack of sites"></select>
+        <select id="pack-route" aria-label="Server for the pack"></select>
+        <button class="btn" type="submit">Add pack</button>
+      </form>
+      <div id="pack-note" class="notice ok hidden"></div>
+
       <div id="sites-empty" class="card empty hidden">
         <p class="dim">No sites yet. Easiest way: open the site, click the WireRoute icon, pick a server.</p>
       </div>
@@ -59,7 +67,7 @@
       <div id="drop" class="card drop" tabindex="0">
         <div class="drop-icon">⤓</div>
         <b>Drop WireGuard config files here</b>
-        <span class="dim">or <button class="link" id="pick-file">choose files</button> or <button class="link" id="show-paste">paste a config</button></span>
+        <span class="dim">or <button class="link" id="pick-file">choose files</button> or <button class="link" id="show-paste">paste a config</button> or <button class="link" id="show-wgeasy">get them from wg-easy</button></span>
         <input type="file" id="file" accept=".conf,text/plain" multiple hidden />
       </div>
 
@@ -71,6 +79,27 @@
           <button class="btn btn-primary" type="submit">Add server</button>
         </div>
       </form>
+      <form id="wgeasy" class="card wgeasy hidden">
+        <b>Get servers from wg-easy</b>
+        <p class="dim small">Sign in to your wg-easy page in Chrome as usual. WireRoute uses that sign-in and never sees your password.</p>
+        <div class="add-row">
+          <input type="text" id="wgeasy-url" placeholder="wg-easy address, like 10.12.10.25:51821" autocomplete="off" />
+          <button class="btn btn-primary" type="submit" id="wgeasy-connect">Connect</button>
+          <button class="btn" type="button" id="wgeasy-close">Close</button>
+        </div>
+        <div id="wgeasy-signin" class="notice warn hidden">
+          You're not signed in to that wg-easy. <button class="link" type="button" id="wgeasy-open">Open it and sign in</button>, then click Connect again.
+        </div>
+        <div id="wgeasy-error" class="notice bad hidden"></div>
+        <div id="wgeasy-clients" class="hidden">
+          <p class="dim small">Pick the configs made for this computer. A config another device also uses knocks one of them off, so each computer should have its own.</p>
+          <ul id="wgeasy-list" class="wgeasy-list"></ul>
+          <div class="row-end">
+            <button class="btn" type="button" id="wgeasy-new">Make a new one for this computer</button>
+            <button class="btn btn-primary" type="button" id="wgeasy-add">Add selected</button>
+          </div>
+        </div>
+      </form>
       <div id="server-error" class="notice bad hidden"></div>
       <div id="server-ok" class="notice ok hidden"></div>
 
@@ -79,7 +108,7 @@
       <header class="head sub">
         <div>
           <h2>Groups</h2>
-          <p class="dim">A group is a list of servers. A site set to a group uses the first server that's up. If that server stops answering, the site moves to the next one within about 10 seconds.</p>
+          <p class="dim">A group is a list of servers. A site set to a group uses the first server that's up, or the fastest one if you pick that. If that server stops answering, the site moves to another within about 10 seconds.</p>
         </div>
       </header>
       <form id="add-group" class="card add-row">
@@ -106,6 +135,10 @@
         <label class="setting">
           <div><b>Block WebRTC leaks</b><div class="dim small">Stops sites finding your real IP through video-call tech. Browser calls (Meet, Zoom web) may get a little laggier.</div></div>
           <span class="switch"><input type="checkbox" data-setting="blockWebRTC" /><span></span></span>
+        </label>
+        <label class="setting">
+          <div><b>Alerts</b><div class="dim small">A pop-up when a server you use stops answering, when a group switches to another server, and when it's back.</div></div>
+          <span class="switch"><input type="checkbox" data-setting="notify" /><span></span></span>
         </label>
         <label class="setting">
           <div><b>Home network stays direct</b><div class="dim small">Your router page, printers and other local devices never go through a VPN.</div></div>
