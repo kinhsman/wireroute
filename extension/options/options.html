@@ -72,11 +72,12 @@
       </div>
 
       <form id="paste-form" class="card paste hidden">
+        <b id="paste-title" class="hidden"></b>
         <input type="text" id="paste-name" placeholder="Name, like Home or Vietnam" />
-        <textarea id="paste-text" rows="10" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = ...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = ..."></textarea>
+        <textarea id="paste-text" rows="12" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = ...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = ..."></textarea>
         <div class="row-end">
           <button class="btn" type="button" id="cancel-paste">Cancel</button>
-          <button class="btn btn-primary" type="submit">Add server</button>
+          <button class="btn btn-primary" type="submit" id="paste-save">Add server</button>
         </div>
       </form>
       <form id="wgeasy" class="card wgeasy hidden">

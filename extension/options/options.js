@@ -229,6 +229,7 @@ function renderServers() {
           ),
           el("span", { class: "spacer" }),
           checkBtn,
+          el("button", { class: "btn btn-sm", onclick: () => editServer(s) }, "Edit"),
           el("button", { class: "btn btn-sm", onclick: () => renameServer(s) }, "Rename"),
           el("button", { class: "btn btn-sm", onclick: () => download(`${s.name}.conf`, toConf(s), "text/plain") }, "Export"),
           el("button", { class: "btn btn-sm btn-danger", onclick: () => removeServer(s, uses) }, "Delete")
@@ -372,16 +373,67 @@ $("file").addEventListener("change", (e) => {
   readFiles([...e.target.files]);
   e.target.value = "";
 });
-$("show-paste").addEventListener("click", () => $("paste-form").classList.remove("hidden"));
-$("cancel-paste").addEventListener("click", () => $("paste-form").classList.add("hidden"));
+// The paste box doubles as the editor for a server already added: it opens
+// with that server's config, and saving keeps the same server, so its sites,
+// groups and badge stay as they are. The helper reconnects it by itself.
+let editingId = null;
+
+function openPaste(s) {
+  editingId = s?.id ?? null;
+  $("paste-title").textContent = s ? `Edit ${s.name}` : "";
+  $("paste-title").classList.toggle("hidden", !s);
+  $("paste-name").value = s?.name ?? "";
+  $("paste-text").value = s ? toConf(s) : "";
+  $("paste-save").textContent = s ? "Save changes" : "Add server";
+  showNotice("server-error", "");
+  $("paste-form").classList.remove("hidden");
+  $("paste-form").scrollIntoView({ block: "center", behavior: "smooth" });
+  (s ? $("paste-text") : $("paste-name")).focus({ preventScroll: true });
+}
+
+function closePaste() {
+  editingId = null;
+  $("paste-form").classList.add("hidden");
+  $("paste-name").value = "";
+  $("paste-text").value = "";
+}
+
+const editServer = (s) => openPaste(s);
+
+const saveServer = (id, name, text) => change(async () => {
+  const { servers, checks } = await fresh(["servers", "checks"]);
+  const old = servers.find((x) => x.id === id);
+  if (!old) return showNotice("server-error", "That server was deleted meanwhile.");
+  let s;
+  try {
+    s = parseConf(text);
+  } catch (e) {
+    return showNotice("server-error", `${old.name}: ${e.message}`);
+  }
+  if (servers.some((x) => x.id !== id && sameServer(x, s))) {
+    return showNotice("server-error", "Another server already has this config.");
+  }
+  const changes = { servers: servers.map((x) => (x.id === id ? { ...x, ...s, name: name || x.name } : x)) };
+  // A new address can mean a new exit country: check it again.
+  if (s.endpoint !== old.endpoint && checks[id]) {
+    const { [id]: _gone, ...rest } = checks;
+    changes.checks = rest;
+  }
+  await store.save(changes);
+  showNotice("server-error", "");
+  showNotice("server-ok", `Saved ${name || old.name}.`);
+  closePaste();
+  await refresh();
+});
+
+$("show-paste").addEventListener("click", () => openPaste(null));
+$("cancel-paste").addEventListener("click", closePaste);
 $("paste-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  await addServers([{ name: $("paste-name").value.trim(), text: $("paste-text").value }]);
-  if ($("server-error").classList.contains("hidden")) {
-    $("paste-form").classList.add("hidden");
-    $("paste-name").value = "";
-    $("paste-text").value = "";
-  }
+  const name = $("paste-name").value.trim();
+  if (editingId) return saveServer(editingId, name, $("paste-text").value);
+  await addServers([{ name, text: $("paste-text").value }]);
+  if ($("server-error").classList.contains("hidden")) closePaste();
 });
 
 async function renameServer(s) {
