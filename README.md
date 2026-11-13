@@ -91,11 +91,22 @@ your user registry (no admin rights). `Uninstall WireRoute.cmd` undoes it.
 npm test                          # rules, PAC and config parsing
 (cd host && go test -race ./...)  # helper, with fake WireGuard servers
 npm run e2e                       # real Chrome: features, real-life browsing,
-                                  # break-it (leaks, crashes, restart), every button
+                                  # break-it (leaks, crashes, restart), DNS
+                                  # leaks, every button
 ```
 
 The end-to-end test runs a throwaway headless Chrome profile; it never touches
-your own profile. `SHOTS=/some/dir npm run e2e` also saves screenshots.
+your own profile. `SHOTS=/some/dir npm run e2e` also saves screenshots. On
+Linux, set `CHROME` to a Chrome or Chromium if Google Chrome isn't installed,
+and keep `TMPDIR` short (Chrome refuses long socket paths).
+
+DNS leaks are checked twice. `TestNoDNSLeaks` (helper) catches any site name
+the helper looks up on your computer instead of inside the tunnel.
+`test/e2e/dnsleak.js` reads Chrome's own network log while it browses sites
+set to a server, including pages with DNS prefetch, preconnect, links,
+pictures and a hovered link, and fails on any lookup Chrome sends out for
+them. Both first check that they can see a lookup (a Direct site), so a pass
+means something.
 
 ## Notes
 

@@ -178,6 +178,10 @@ func handler(name string) http.Handler {
 <img src="http://search-assets.test/logo.png" alt="">
 <a id="result" href="%s">result</a>%s
 <script>addEventListener("pageshow", (e) => { if (e.persisted) window.__restored = "from memory"; });</script>`, name, to, pre)
+		case strings.HasPrefix(host, "hints"):
+			// Every way a page asks Chrome to look names up early, for the DNS
+			// leak test: names=a.test,b.test,c.test,d.test.
+			hintsPage(w, strings.Split(q.Get("names"), ","))
 		case strings.HasPrefix(host, "widget"):
 			// An embedded player from another company, with its own CDN.
 			w.Header().Set("Content-Type", "text/html")
@@ -237,4 +241,18 @@ func serveDNS(c net.PacketConn) {
 			_, _ = c.WriteTo(out, addr)
 		}
 	}
+}
+
+// hintsPage: a DNS prefetch hint, a preconnect, a link and a picture, one name
+// each (names must have 4).
+func hintsPage(w http.ResponseWriter, names []string) {
+	for len(names) < 4 {
+		names = append(names, "unused.test")
+	}
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprintf(w, `<!doctype html><title>hints</title>
+<link rel="dns-prefetch" href="//%s">
+<link rel="preconnect" href="http://%s">
+<a id="link" href="http://%s/" style="display:block;font-size:40px">a link</a>
+<img src="http://%s/pic.png" alt="">`, names[0], names[1], names[2], names[3])
 }

@@ -1,10 +1,11 @@
 // Shared plumbing for the end-to-end tests: installs the helper, runs fake
 // WireGuard servers, and drives a throwaway Chrome profile over the DevTools
 // protocol. Nothing here touches your normal Chrome profile or the computer's
-// network. Runs on macOS and Windows.
+// network. Runs on macOS and Windows (and Linux, with CHROME set or Google
+// Chrome installed, for the dev box).
 
 import { spawn, execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConf } from "../../extension/lib/conf.js";
@@ -13,6 +14,7 @@ import { isShared, matchRule } from "../../extension/lib/hosts.js";
 export const ROOT = resolve(import.meta.dirname, "../..");
 export const EXT_ID = "kbmajebcnniiphhhhhgafeipmpibcnjc";
 export const WINDOWS = process.platform === "win32";
+const LINUX = process.platform === "linux";
 const EXE = WINDOWS ? ".exe" : "";
 const CHROME =
   process.env.CHROME ??
@@ -22,7 +24,9 @@ const CHROME =
         join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
         join(process.env.LOCALAPPDATA ?? "", "Google", "Chrome", "Application", "chrome.exe"),
       ].find((p) => existsSync(p))
-    : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    : LINUX
+      ? "/usr/bin/google-chrome"
+      : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -96,6 +100,11 @@ process.on("exit", () => {
 
 /** Install the current helper the way a person would on this system. */
 function installHelper() {
+  if (LINUX) {
+    // Linux: build it; each test profile registers it itself (see Browser).
+    execFileSync("go", ["build", "-o", join(tmpRoot, "wireroute-host"), "."], { cwd: join(ROOT, "host"), stdio: "inherit" });
+    return;
+  }
   if (!WINDOWS) {
     execFileSync(join(ROOT, "install", "install.sh"), { stdio: "ignore" });
     return;
@@ -156,12 +165,23 @@ export async function setup(serverNames = ["A", "B"]) {
 
 /** A throwaway Chrome you can close and start again on the same profile. */
 export class Browser {
-  constructor(profile) {
+  constructor(profile, { args = [] } = {}) {
     this.profile = profile;
+    this.args = args;
     mkdirSync(join(profile, "NativeMessagingHosts"), { recursive: true });
     // On a Mac, a Chrome with its own profile folder reads helper
     // registrations from there. (Windows reads them from the registry.)
-    if (!WINDOWS) copyFileSync(
+    if (LINUX) writeFileSync(
+      join(profile, "NativeMessagingHosts", "com.wireroute.host.json"),
+      JSON.stringify({
+        name: "com.wireroute.host",
+        description: "WireRoute helper (test)",
+        path: join(tmpRoot, "wireroute-host"),
+        type: "stdio",
+        allowed_origins: [`chrome-extension://${EXT_ID}/`],
+      })
+    );
+    else if (!WINDOWS) copyFileSync(
       join(homedir(), "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.wireroute.host.json"),
       join(profile, "NativeMessagingHosts", "com.wireroute.host.json")
     );
@@ -181,6 +201,7 @@ export class Browser {
         "--enable-unsafe-extension-debugging",
         "--no-first-run",
         "--no-default-browser-check",
+        ...this.args,
         "--disable-features=HttpsUpgrades,HttpsFirstBalancedMode,HttpsFirstBalancedModeAutoEnable,HttpsFirstModeV2ForTypicallySecureUsers,HttpsFirstModeIncognito",
         "about:blank",
       ],

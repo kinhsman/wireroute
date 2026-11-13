@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "e2e": "node test/e2e/run.js && node test/e2e/browse.js && node test/e2e/breakit.js && node test/e2e/buttons.js"
+    "e2e": "node test/e2e/run.js && node test/e2e/browse.js && node test/e2e/breakit.js && node test/e2e/dnsleak.js && node test/e2e/buttons.js"
   }
 }
