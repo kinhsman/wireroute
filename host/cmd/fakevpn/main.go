@@ -149,22 +149,35 @@ func handler(name string) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Cache-Control", "no-store")
+		// Lets another address on the same site preload this page.
+		w.Header().Set("Supports-Loading-Mode", "credentialed-prerender")
 		q := r.URL.Query()
 		switch {
 		case r.URL.Path == "/whoami":
 			fmt.Fprint(w, name)
 		case strings.HasPrefix(host, "search"):
 			// A search results page: preconnects and loads its own assets, and
-			// links to a result.
+			// links to a result. ?pre=<url> preloads that page unseen, the way
+			// Google preloads its top result.
+			if q.Get("keep") != "" {
+				// Cacheable, so Back can restore it from memory like a real
+				// search page.
+				w.Header().Del("Cache-Control")
+			}
 			to := q.Get("to")
 			if to == "" {
 				to = "http://site-a.test/"
+			}
+			pre := ""
+			if p := q.Get("pre"); p != "" {
+				pre = fmt.Sprintf(`<script type="speculationrules">{"prerender":[{"source":"list","urls":[%q]}]}</script>`, p)
 			}
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, `<!doctype html><title>search %s</title>
 <link rel="preconnect" href="http://search-assets.test">
 <img src="http://search-assets.test/logo.png" alt="">
-<a id="result" href="%s">result</a>`, name, to)
+<a id="result" href="%s">result</a>%s
+<script>addEventListener("pageshow", (e) => { if (e.persisted) window.__restored = "from memory"; });</script>`, name, to, pre)
 		case strings.HasPrefix(host, "widget"):
 			// An embedded player from another company, with its own CDN.
 			w.Header().Set("Content-Type", "text/html")

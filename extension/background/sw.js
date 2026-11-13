@@ -316,7 +316,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       await handle({ cmd: "setSiteRoute", pattern: siteOf(host), exact: false, route });
       chrome.tabs.create({ url: info.linkUrl, index: tab ? tab.index + 1 : undefined, openerTabId: tab?.id });
     } else if (kind === "page" && tab) {
-      const host = tabSite.get(tab.id) ?? hostOf(tab.url ?? "");
+      const host = await tabHost(tab.id);
       if (!host) return;
       await handle({ cmd: "setSiteRoute", pattern: siteOf(host), exact: false, route, tabId: tab.id });
     }
@@ -534,8 +534,19 @@ function shortLabel(item) {
   return item.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 3).toUpperCase() || "VPN";
 }
 
+/**
+ * The address a tab shows. Its own address wins over the last page that
+ * started loading in it, which can be one Chrome preloads unseen (Google
+ * does this with the top search result).
+ */
+async function tabHost(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const url = tab?.pendingUrl || tab?.url;
+  return url ? hostOf(url) : tabSite.get(tabId) ?? "";
+}
+
 async function updateBadge(tabId) {
-  const host = tabSite.get(tabId);
+  const host = await tabHost(tabId);
   let text = "";
   let color = "#5f6368";
   if (!cfg.settings.enabled) {
@@ -637,7 +648,9 @@ function onRequest(d) {
   if (!host) return;
 
   // Pages Google preloads from search results aren't shown in the tab yet.
-  const inTab = d.tabId >= 0 && d.documentLifecycle !== "prerender";
+  // A page loading into the tab itself is always its frame 0.
+  const preloaded = d.documentLifecycle === "prerender" || (d.type === "main_frame" && d.frameId !== 0);
+  const inTab = d.tabId >= 0 && !preloaded;
 
   // The site this request belongs to. A page you open is its own site.
   // Requests from a tab's main page carry the page that made them
@@ -761,7 +774,7 @@ async function handle(msg) {
       return { connected: helper.connected };
 
     case "tabInfo": {
-      const host = tabSite.get(msg.tabId) ?? hostOf(msg.url ?? "");
+      const host = msg.tabId != null ? await tabHost(msg.tabId) : hostOf(msg.url ?? "");
       if (!host) return { host: "" };
       const site = siteOf(host);
       const rule = matchRule(cfg.rules, host);
@@ -797,7 +810,7 @@ async function handle(msg) {
       }
       // What this site's pages already loaded in the tab follows it right
       // away (only if the tab really shows that site).
-      const shown = msg.tabId != null ? tabSite.get(msg.tabId) : null;
+      const shown = msg.tabId != null ? await tabHost(msg.tabId) : null;
       const rule = rules.find((r) => r.id === ruleId);
       if (rule && shown && matchRule([rule], shown)) {
         for (const h of tabPages.get(msg.tabId)?.get(siteOf(shown)) ?? []) {

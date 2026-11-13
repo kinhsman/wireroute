@@ -86,6 +86,36 @@ await step("back to the search page: popup and badge follow, nothing from the si
   await invariants({ t0, tabPrefix: "http://site-a.test" });
 });
 
+// 2b. The search page preloads its top result unseen, like Google does.
+await step("a result the search page preloads unseen doesn't become the tab's site", async () => {
+  const t0 = Date.now();
+  const pre = "http://site-p.search.test/?cdn=pre-cdn.test";
+  // Not attached: Chrome won't preload in a tab DevTools is attached to.
+  const { targetId } = await b.cdp("Target.createTarget", { url: "http://search.test/?pre=" + encodeURIComponent(pre) });
+  await until(async () => (await recent()).some((d) => d.at >= t0 && d.host === "pre-cdn.test"), "preloaded page ran", 10000);
+  const tabId = await tabIdOf("http://search.test/?pre=");
+  const info = await b.ask(ext.sessionId, "tabInfo", { tabId });
+  assert.equal(info.host, "search.test");
+  await invariants({ t0, tabPrefix: "http://search.test/?pre=" });
+  await b.close({ targetId });
+});
+
+// 2c. Back to a search page Chrome kept in memory (no reload).
+await step("back to a search page restored from memory: the popup names the search page", async () => {
+  const t = await b.openPage("http://search.test/?keep=1&to=" + encodeURIComponent("http://site-a.test/?cdn=j2c-cdn.test"));
+  await waitTitle(t, /^search/, "search page");
+  await b.evaluate(t.sessionId, "document.getElementById('result').click()");
+  await waitTitle(t, /^page:/, "result page");
+  await b.evaluate(t.sessionId, "history.back()");
+  await waitTitle(t, /^search/, "back to search");
+  await sleep(500);
+  const tabId = await tabIdOf("http://search.test/?keep=");
+  assert.equal(await b.evaluate(t.sessionId, "window.__restored"), "from memory", "Chrome reloaded the page instead");
+  const info = await b.ask(ext.sessionId, "tabInfo", { tabId });
+  assert.equal(info.host, "search.test");
+  await b.close(t);
+});
+
 // 3. Pick a server in the popup for a site reached from search.
 await step("picking A in the popup moves the site and only its own hidden address", async () => {
   const t0 = Date.now();
